@@ -1,8 +1,3 @@
-Here is the updated Python application based on the Krea-2 workflow you provided. I've updated the required model names, the CLIP type to `"krea2"`, adjusted the default sampler settings to match the workflow (8 steps, `euler` sampler, `simple` scheduler, and `1.0` CFG), and updated the default prompts and UI title. I also kept the multiple LoRA support as it is fully compatible.
-
-Make sure to download the required models from [Comfy-Org/Krea-2](https://huggingface.co/Comfy-Org/Krea-2) and place them in their respective folders in `ComfyUI/models/`.
-
-```python
 import os
 import random
 import time
