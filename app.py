@@ -1154,4 +1154,3 @@ demo.launch(
     share=True,
     debug=True
 )
-```
