@@ -875,9 +875,9 @@ Krea-2 Turbo + Multiple LoRA
                     with gr.Row():
 
                         lora1_strength = gr.Slider(
-                            -2.0,
-                            2.0,
-                            value=0.8,
+                            -9.0,
+                            9.0,
+                            value=1,
                             step=0.05,
                             label="Model Strength"
                         )
@@ -885,7 +885,7 @@ Krea-2 Turbo + Multiple LoRA
                         lora1_clip = gr.Slider(
                             -2.0,
                             2.0,
-                            value=0.8,
+                            value=1,
                             step=0.05,
                             label="CLIP Strength"
                         )
@@ -910,9 +910,9 @@ Krea-2 Turbo + Multiple LoRA
                     with gr.Row():
 
                         lora2_strength = gr.Slider(
-                            -2.0,
-                            2.0,
-                            value=0.8,
+                            -9.0,
+                            9.0,
+                            value=1,
                             step=0.05,
                             label="Model Strength"
                         )
@@ -920,7 +920,7 @@ Krea-2 Turbo + Multiple LoRA
                         lora2_clip = gr.Slider(
                             -2.0,
                             2.0,
-                            value=0.8,
+                            value=1,
                             step=0.05,
                             label="CLIP Strength"
                         )
@@ -945,9 +945,9 @@ Krea-2 Turbo + Multiple LoRA
                     with gr.Row():
 
                         lora3_strength = gr.Slider(
-                            -2.0,
-                            2.0,
-                            value=0.8,
+                            -9.0,
+                            9.0,
+                            value=1,
                             step=0.05,
                             label="Model Strength"
                         )
@@ -955,7 +955,7 @@ Krea-2 Turbo + Multiple LoRA
                         lora3_clip = gr.Slider(
                             -2.0,
                             2.0,
-                            value=0.8,
+                            value=1,
                             step=0.05,
                             label="CLIP Strength"
                         )
@@ -980,9 +980,9 @@ Krea-2 Turbo + Multiple LoRA
                     with gr.Row():
 
                         lora4_strength = gr.Slider(
-                            -2.0,
-                            2.0,
-                            value=0.8,
+                            -9.0,
+                            9.0,
+                            value=1,
                             step=0.05,
                             label="Model Strength"
                         )
@@ -990,7 +990,7 @@ Krea-2 Turbo + Multiple LoRA
                         lora4_clip = gr.Slider(
                             -2.0,
                             2.0,
-                            value=0.8,
+                            value=1,
                             step=0.05,
                             label="CLIP Strength"
                         )
@@ -1015,9 +1015,9 @@ Krea-2 Turbo + Multiple LoRA
                     with gr.Row():
 
                         lora5_strength = gr.Slider(
-                            -2.0,
-                            2.0,
-                            value=0.8,
+                            -9.0,
+                            9.0,
+                            value=1,
                             step=0.05,
                             label="Model Strength"
                         )
@@ -1025,7 +1025,7 @@ Krea-2 Turbo + Multiple LoRA
                         lora5_clip = gr.Slider(
                             -2.0,
                             2.0,
-                            value=0.8,
+                            value=1,
                             step=0.05,
                             label="CLIP Strength"
                         )
