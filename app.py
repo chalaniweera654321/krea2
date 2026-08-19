@@ -43,7 +43,7 @@ CheckpointLoaderSimple = NODE_CLASS_MAPPINGS[
 ConditioningZeroOut = NODE_CLASS_MAPPINGS.get(
     "ConditioningZeroOut",
     None
-)
+)()
 
 
 # ============================================================
@@ -1385,9 +1385,9 @@ with gr.Blocks(
 
                     lora1 = gr.Dropdown(
 
-                        choices=choices=[""] + LORA_FILES,
+                        choices=LORA_FILES,
 
-                        value="",
+                        value=LORA_FILES[0],
 
                         label="LoRA"
                     )
