@@ -13,12 +13,12 @@ from nodes import NODE_CLASS_MAPPINGS
 
 
 # ============================================================
-# KREA-2 TURBO + CHECKPOINT + MULTIPLE LORA
+# KREA-2 TURBO + MULTIPLE LORA
 # ============================================================
 
-print("\n" + "=" * 70)
-print("        KREA-2 TURBO + CHECKPOINT + MULTIPLE LORA")
-print("=" * 70)
+print("\n" + "=" * 60)
+print("        KREA-2 TURBO + Multiple LoRA")
+print("=" * 60)
 
 
 # ============================================================
@@ -33,132 +33,101 @@ KSampler = NODE_CLASS_MAPPINGS["KSampler"]()
 VAEDecode = NODE_CLASS_MAPPINGS["VAEDecode"]()
 EmptyLatentImage = NODE_CLASS_MAPPINGS["EmptyLatentImage"]()
 LoraLoader = NODE_CLASS_MAPPINGS["LoraLoader"]()
-
-# Checkpoint loader
-CheckpointLoaderSimple = NODE_CLASS_MAPPINGS[
-    "CheckpointLoaderSimple"
-]()
-
-# Krea-2 negative conditioning
-ConditioningZeroOut = NODE_CLASS_MAPPINGS.get(
-    "ConditioningZeroOut",
-    None
-)()
+ConditioningZeroOut = NODE_CLASS_MAPPINGS.get("ConditioningZeroOut", None)()
 
 
 # ============================================================
-# DIRECTORIES
+# BASE MODEL
 # ============================================================
 
-LORA_DIR = "./models/loras"
-CHECKPOINT_DIR = "./models/diffusion_models"
-SAVE_DIR = "./results"
+startup_start = time.time()
 
-os.makedirs(LORA_DIR, exist_ok=True)
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-os.makedirs(SAVE_DIR, exist_ok=True)
+with torch.inference_mode():
 
+    print("\n[1/3] Loading UNet... ", end="", flush=True)
 
-# ============================================================
-# MODEL NAMES
-# ============================================================
+    t0 = time.time()
 
-ORIGINAL_MODEL_NAME = "Original Krea-2 Turbo"
+    base_model = UNETLoader.load_unet(
+        "krea2_turbo_fp8_scaled.safetensors",
+        "default"
+    )[0]
 
-ORIGINAL_UNET = "krea2_turbo_fp8_scaled.safetensors"
-ORIGINAL_CLIP = "qwen3vl_4b_fp8_scaled.safetensors"
-ORIGINAL_VAE = "qwen_image_vae.safetensors"
+    print(f"done ({time.time() - t0:.1f}s)")
 
 
-# ============================================================
-# FIND CHECKPOINTS
-# ============================================================
+    print("[2/3] Loading CLIP (Qwen3-VL)... ", end="", flush=True)
 
-def get_checkpoint_files():
+    t0 = time.time()
 
-    files = []
+    base_clip = CLIPLoader.load_clip(
+        "qwen3vl_4b_fp8_scaled.safetensors",
+        type="krea2"
+    )[0]
 
-    if not os.path.exists(CHECKPOINT_DIR):
-        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-
-    for root, dirs, filenames in os.walk(CHECKPOINT_DIR):
-
-        for filename in filenames:
-
-            if filename.lower().endswith(
-                (
-                    ".safetensors",
-                    ".ckpt",
-                    ".pt"
-                )
-            ):
-
-                full_path = os.path.join(
-                    root,
-                    filename
-                )
-
-                relative_path = os.path.relpath(
-                    full_path,
-                    CHECKPOINT_DIR
-                )
-
-                files.append(relative_path)
-
-    files.sort()
-
-    return files
+    print(f"done ({time.time() - t0:.1f}s)")
 
 
-CHECKPOINT_FILES = get_checkpoint_files()
+    print("[3/3] Loading VAE... ", end="", flush=True)
+
+    t0 = time.time()
+
+    vae = VAELoader.load_vae(
+        "qwen_image_vae.safetensors"
+    )[0]
+
+    print(f"done ({time.time() - t0:.1f}s)")
+
 
 print(
-    f"\n📦 Found {len(CHECKPOINT_FILES)} checkpoint(s)"
+    f"\n✅ Base models loaded in "
+    f"{time.time() - startup_start:.1f}s"
 )
 
-for checkpoint in CHECKPOINT_FILES:
-    print(f"   • {checkpoint}")
+print("=" * 60)
 
 
 # ============================================================
-# FIND LORAS
+# LORA DIRECTORY
 # ============================================================
+
+# Normal ComfyUI location
+LORA_DIR = "./models/loras"
+
 
 def get_lora_files():
 
-    files = []
-
     if not os.path.exists(LORA_DIR):
-        os.makedirs(LORA_DIR, exist_ok=True)
+        print(
+            f"\n⚠️ LoRA directory not found:"
+            f"\n{os.path.abspath(LORA_DIR)}"
+        )
+
+        return [""]
+
+
+    files = []
 
     for root, dirs, filenames in os.walk(LORA_DIR):
 
         for filename in filenames:
 
             if filename.lower().endswith(
-                (
-                    ".safetensors",
-                    ".pt",
-                    ".ckpt"
-                )
+                (".safetensors", ".pt", ".ckpt")
             ):
 
-                full_path = os.path.join(
-                    root,
-                    filename
-                )
-
+                # Return path relative to models/loras
                 relative_path = os.path.relpath(
-                    full_path,
+                    os.path.join(root, filename),
                     LORA_DIR
                 )
 
                 files.append(relative_path)
 
+
     files.sort()
 
     if not files:
-
         print(
             "\n⚠️ No LoRAs found in:"
             f"\n{os.path.abspath(LORA_DIR)}"
@@ -180,213 +149,17 @@ LORA_FILES = get_lora_files()
 
 
 # ============================================================
-# LOAD ORIGINAL KREA-2
-# ============================================================
-
-print("\n" + "=" * 70)
-print("Loading Original Krea-2 Turbo")
-print("=" * 70)
-
-startup_start = time.time()
-
-with torch.inference_mode():
-
-    # --------------------------------------------------------
-    # UNET
-    # --------------------------------------------------------
-
-    print(
-        "\n[1/3] Loading Krea-2 UNet... ",
-        end="",
-        flush=True
-    )
-
-    t0 = time.time()
-
-    original_model = UNETLoader.load_unet(
-        ORIGINAL_UNET,
-        "default"
-    )[0]
-
-    print(
-        f"done ({time.time() - t0:.1f}s)"
-    )
-
-
-    # --------------------------------------------------------
-    # CLIP
-    # --------------------------------------------------------
-
-    print(
-        "[2/3] Loading Qwen3-VL CLIP... ",
-        end="",
-        flush=True
-    )
-
-    t0 = time.time()
-
-    original_clip = CLIPLoader.load_clip(
-        ORIGINAL_CLIP,
-        type="krea2"
-    )[0]
-
-    print(
-        f"done ({time.time() - t0:.1f}s)"
-    )
-
-
-    # --------------------------------------------------------
-    # VAE
-    # --------------------------------------------------------
-
-    print(
-        "[3/3] Loading Krea-2 VAE... ",
-        end="",
-        flush=True
-    )
-
-    t0 = time.time()
-
-    original_vae = VAELoader.load_vae(
-        ORIGINAL_VAE
-    )[0]
-
-    print(
-        f"done ({time.time() - t0:.1f}s)"
-    )
-
-
-print(
-    "\n✅ Original Krea-2 loaded in "
-    f"{time.time() - startup_start:.1f}s"
-)
-
-print("=" * 70)
-
-
-# ============================================================
-# CHECKPOINT CACHE
-# ============================================================
-
-checkpoint_cache = {}
-
-
-# ============================================================
-# LOAD SELECTED MODEL
-# ============================================================
-
-def load_selected_model(model_source):
-
-    # ========================================================
-    # ORIGINAL KREA-2
-    # ========================================================
-
-    if model_source == ORIGINAL_MODEL_NAME:
-
-        print(
-            "\n🎯 Using Original Krea-2 Turbo"
-        )
-
-        return (
-            original_model,
-            original_clip,
-            original_vae,
-            True,
-            ORIGINAL_MODEL_NAME
-        )
-
-
-    # ========================================================
-    # CHECKPOINT
-    # ========================================================
-
-    checkpoint_path = os.path.join(
-        CHECKPOINT_DIR,
-        model_source
-    )
-
-    if not os.path.exists(checkpoint_path):
-
-        raise FileNotFoundError(
-            "\nCheckpoint not found:\n"
-            f"{checkpoint_path}"
-        )
-
-
-    # --------------------------------------------------------
-    # CACHE
-    # --------------------------------------------------------
-
-    if model_source in checkpoint_cache:
-
-        print(
-            f"\n🎯 Using cached checkpoint:"
-            f"\n   {model_source}"
-        )
-
-        model, clip, vae = checkpoint_cache[
-            model_source
-        ]
-
-        return (
-            model,
-            clip,
-            vae,
-            False,
-            model_source
-        )
-
-
-    # --------------------------------------------------------
-    # LOAD
-    # --------------------------------------------------------
-
-    print(
-        "\n🎯 Loading Krea-compatible checkpoint:"
-        f"\n   {checkpoint_path}"
-    )
-
-    t0 = time.time()
-
-    with torch.inference_mode():
-
-        model = UNETLoader.load_unet(
-            model_source,
-            "default"
-        )[0]
-
-
-    print(
-        "✅ Diffusion model loaded in "
-        f"{time.time() - t0:.1f}s"
-    )
-
-    # Krea checkpoints use the same Qwen3-VL
-    # and Krea VAE as the original model.
-
-    clip = original_clip
-    vae = original_vae
-
-    return (
-        model,
-        clip,
-        vae,
-        True,
-        model_source
-    )
-
-
-# ============================================================
 # APPLY MULTIPLE LORAS
 # ============================================================
 
 def apply_loras(
-    model,
-    clip,
     lora_names,
     lora_strengths,
     clip_strengths
 ):
+
+    model = base_model
+    clip = base_clip
 
     applied = []
 
@@ -397,11 +170,6 @@ def apply_loras(
         if not lora_name:
             continue
 
-
-        # ----------------------------------------------------
-        # Strengths
-        # ----------------------------------------------------
-
         model_strength = float(
             lora_strengths[i]
         )
@@ -411,15 +179,8 @@ def apply_loras(
         )
 
 
-        # ----------------------------------------------------
-        # Disabled
-        # ----------------------------------------------------
-
-        if (
-            model_strength == 0
-            and
-            clip_strength == 0
-        ):
+        # Skip completely disabled LoRA
+        if model_strength == 0 and clip_strength == 0:
             continue
 
 
@@ -445,10 +206,6 @@ def apply_loras(
         t0 = time.time()
 
 
-        # ----------------------------------------------------
-        # Apply
-        # ----------------------------------------------------
-
         model, clip = LoraLoader.load_lora(
             model,
             clip,
@@ -469,16 +226,20 @@ def apply_loras(
         )
 
 
-    return (
-        model,
-        clip,
-        applied
-    )
+    return model, clip, applied
 
 
 # ============================================================
-# SAVE PATH
+# SAVE HELPERS
 # ============================================================
+
+save_dir = "./results"
+
+os.makedirs(
+    save_dir,
+    exist_ok=True
+)
+
 
 def get_save_path(prompt):
 
@@ -488,9 +249,6 @@ def get_save_path(prompt):
         prompt
     )[:25]
 
-    if not safe_prompt:
-        safe_prompt = "krea2"
-
     uid = uuid.uuid4().hex[:6]
 
     filename = (
@@ -498,7 +256,7 @@ def get_save_path(prompt):
     )
 
     return os.path.join(
-        SAVE_DIR,
+        save_dir,
         filename
     )
 
@@ -508,23 +266,14 @@ def get_save_path(prompt):
 # ============================================================
 
 @torch.inference_mode()
-def generate(input_data):
+def generate(input):
 
-    values = input_data["input"]
-
-
-    # ========================================================
-    # MODEL
-    # ========================================================
-
-    model_source = values[
-        "model_source"
-    ]
+    values = input["input"]
 
 
-    # ========================================================
-    # PROMPTS
-    # ========================================================
+    # --------------------------------------------------------
+    # Basic settings
+    # --------------------------------------------------------
 
     positive_prompt = values[
         "positive_prompt"
@@ -534,22 +283,11 @@ def generate(input_data):
         "negative_prompt"
     ]
 
+    seed = values["seed"]
 
-    # ========================================================
-    # IMAGE SETTINGS
-    # ========================================================
+    steps = values["steps"]
 
-    seed = int(
-        values["seed"]
-    )
-
-    steps = int(
-        values["steps"]
-    )
-
-    cfg = float(
-        values["cfg"]
-    )
+    cfg = values["cfg"]
 
     sampler_name = values[
         "sampler_name"
@@ -559,26 +297,20 @@ def generate(input_data):
         "scheduler"
     ]
 
-    denoise = float(
-        values["denoise"]
-    )
+    denoise = values["denoise"]
 
-    width = int(
-        values["width"]
-    )
+    width = values["width"]
 
-    height = int(
-        values["height"]
-    )
+    height = values["height"]
 
-    batch_size = int(
-        values["batch_size"]
-    )
+    batch_size = values[
+        "batch_size"
+    ]
 
 
-    # ========================================================
-    # LORA SETTINGS
-    # ========================================================
+    # --------------------------------------------------------
+    # LoRA settings
+    # --------------------------------------------------------
 
     lora_names = values[
         "lora_names"
@@ -593,55 +325,12 @@ def generate(input_data):
     ]
 
 
-    # ========================================================
-    # HEADER
-    # ========================================================
+    print("\n" + "=" * 60)
+    print("              NEW GENERATION")
+    print("=" * 60)
 
-    print(
-        "\n" + "=" * 70
-    )
-
-    print(
-        "                    NEW GENERATION"
-    )
-
-    print(
-        "=" * 70
-    )
 
     total_start = time.time()
-
-
-    # ========================================================
-    # LOAD MODEL
-    # ========================================================
-
-    print(
-        "\n[1/5] Loading selected model..."
-    )
-
-    t0 = time.time()
-
-
-    (
-        model,
-        clip,
-        current_vae,
-        is_original_krea,
-        model_name
-    ) = load_selected_model(
-        model_source
-    )
-
-
-    print(
-        f"   Model: {model_name}"
-    )
-
-    print(
-        f"   Time: "
-        f"{time.time() - t0:.1f}s"
-    )
 
 
     # ========================================================
@@ -649,19 +338,14 @@ def generate(input_data):
     # ========================================================
 
     print(
-        "\n[2/5] Applying LoRAs..."
+        "\n[1/5] Applying LoRAs..."
     )
+
 
     t0 = time.time()
 
 
-    (
-        model,
-        clip,
-        applied_loras
-    ) = apply_loras(
-        model,
-        clip,
+    model, clip, applied_loras = apply_loras(
         lora_names,
         lora_strengths,
         clip_strengths
@@ -669,13 +353,11 @@ def generate(input_data):
 
 
     print(
-        f"\n✅ Applied "
-        f"{len(applied_loras)} LoRA(s)"
+        f"\n✅ Applied {len(applied_loras)} LoRA(s)"
     )
 
     print(
-        f"   Time: "
-        f"{time.time() - t0:.1f}s"
+        f"   Time: {time.time() - t0:.1f}s"
     )
 
 
@@ -684,17 +366,14 @@ def generate(input_data):
     # ========================================================
 
     print(
-        "\n[3/5] Encoding prompts... ",
+        "\n[2/5] Encoding prompts... ",
         end="",
         flush=True
     )
 
+
     t0 = time.time()
 
-
-    # --------------------------------------------------------
-    # POSITIVE
-    # --------------------------------------------------------
 
     positive = CLIPTextEncode.encode(
         clip,
@@ -702,34 +381,12 @@ def generate(input_data):
     )[0]
 
 
-    # --------------------------------------------------------
-    # NEGATIVE
-    # --------------------------------------------------------
-
-    # Original Krea-2 uses ZeroOut according to
-    # the original application.
-    #
-    # Normal checkpoints use the actual negative prompt.
-
-    if (
-        is_original_krea
-        and
-        ConditioningZeroOut is not None
-    ):
-
-        negative = (
-            ConditioningZeroOut.zero_out(
-                positive
-            )[0]
-        )
-
-        print(
-            "Krea-2 ZeroOut negative conditioning",
-            end=" "
-        )
-
+    # Krea-2 uses ConditioningZeroOut for negative prompts instead of CLIPTextEncode
+    if ConditioningZeroOut is not None:
+        negative = ConditioningZeroOut.zero_out(
+            positive
+        )[0]
     else:
-
         negative = CLIPTextEncode.encode(
             clip,
             negative_prompt
@@ -746,18 +403,19 @@ def generate(input_data):
     # ========================================================
 
     print(
-        "[4/5] Creating latent image... ",
+        "[3/5] Creating latent image... ",
         end="",
         flush=True
     )
+
 
     t0 = time.time()
 
 
     latent_image = EmptyLatentImage.generate(
-        width,
-        height,
-        batch_size=batch_size
+        int(width),
+        int(height),
+        batch_size=int(batch_size)
     )[0]
 
 
@@ -771,29 +429,30 @@ def generate(input_data):
     # ========================================================
 
     print(
-        f"[5/5] Sampling "
+        f"[4/5] Sampling "
         f"({steps} steps)..."
     )
+
 
     t0 = time.time()
 
 
     samples = KSampler.sample(
         model,
-        seed,
-        steps,
-        cfg,
+        int(seed),
+        int(steps),
+        float(cfg),
         sampler_name,
         scheduler,
         positive,
         negative,
         latent_image,
-        denoise=denoise
+        denoise=float(denoise)
     )[0]
 
 
     print(
-        "      Sampling done "
+        f"      Sampling done "
         f"({time.time() - t0:.1f}s)"
     )
 
@@ -803,16 +462,17 @@ def generate(input_data):
     # ========================================================
 
     print(
-        "      Decoding image... ",
+        "[5/5] Decoding image... ",
         end="",
         flush=True
     )
+
 
     t0 = time.time()
 
 
     decoded = VAEDecode.decode(
-        current_vae,
+        vae,
         samples
     )[0].detach()
 
@@ -845,7 +505,7 @@ def generate(input_data):
 
 
     print(
-        "\n💾 Saved:"
+        f"\n💾 Saved:"
         f"\n   {save_path}"
     )
 
@@ -868,7 +528,7 @@ def generate(input_data):
         )
 
         print(
-            "☁️ Copied to Google Drive:"
+            f"☁️ Copied to Google Drive:"
             f"\n   {drive_path}"
         )
 
@@ -878,33 +538,17 @@ def generate(input_data):
     # ========================================================
 
     print(
-        "\n" + "-" * 70
+        f"\n🎨 LoRAs used:"
     )
-
-    print(
-        f"🧠 Model:"
-        f"\n   {model_name}"
-    )
-
-
-    print(
-        "\n🎨 LoRAs used:"
-    )
-
 
     if applied_loras:
 
         for lora in applied_loras:
-
-            print(
-                f"   • {lora}"
-            )
+            print(f"   • {lora}")
 
     else:
 
-        print(
-            "   • None"
-        )
+        print("   • None")
 
 
     print(
@@ -916,15 +560,10 @@ def generate(input_data):
         f"{time.time() - total_start:.1f}s"
     )
 
-    print(
-        "=" * 70 + "\n"
-    )
+    print("=" * 60 + "\n")
 
 
-    return (
-        save_path,
-        seed
-    )
+    return save_path, seed
 
 
 # ============================================================
@@ -934,14 +573,7 @@ def generate(input_data):
 import gradio as gr
 
 
-# ============================================================
-# GENERATE UI FUNCTION
-# ============================================================
-
 def generate_ui(
-
-    model_source,
-
     positive_prompt,
     negative_prompt,
 
@@ -980,12 +612,7 @@ def generate_ui(
 ):
 
 
-    # ========================================================
-    # LORA ARRAYS
-    # ========================================================
-
     lora_names = [
-
         lora1,
         lora2,
         lora3,
@@ -995,7 +622,6 @@ def generate_ui(
 
 
     lora_strengths = [
-
         lora1_strength,
         lora2_strength,
         lora3_strength,
@@ -1005,7 +631,6 @@ def generate_ui(
 
 
     clip_strengths = [
-
         lora1_clip,
         lora2_clip,
         lora3_clip,
@@ -1014,31 +639,9 @@ def generate_ui(
     ]
 
 
-    # ========================================================
-    # RANDOM SEED
-    # ========================================================
-
-    # Keep original behavior:
-    # Seed 0 = random.
-
-    if int(seed) == 0:
-
-        seed = random.randint(
-            0,
-            0xFFFFFFFF
-        )
-
-
-    # ========================================================
-    # INPUT DATA
-    # ========================================================
-
     input_data = {
 
         "input": {
-
-            "model_source":
-                model_source,
 
             "positive_prompt":
                 positive_prompt,
@@ -1085,10 +688,6 @@ def generate_ui(
     }
 
 
-    # ========================================================
-    # GENERATE
-    # ========================================================
-
     image_path, used_seed = generate(
         input_data
     )
@@ -1097,7 +696,7 @@ def generate_ui(
     return (
         image_path,
         image_path,
-        str(used_seed)
+        used_seed
     )
 
 
@@ -1106,13 +705,12 @@ def generate_ui(
 # ============================================================
 
 DEFAULT_POSITIVE = """
-A high-resolution, surreal digital illustration showing a human hand holding a martini glass.
-The image is overlaid with whimsical, expressive ink-style doodles, including a cartoon figure
-inside the glass, a drawn citrus wedge on the rim, and various abstract sketches and faces
-surrounding the glass against a clean, white background. The style seamlessly blends a realistic,
+A high-resolution, surreal digital illustration showing a human hand holding a martini glass. 
+The image is overlaid with whimsical, expressive ink-style doodles, including a cartoon figure 
+inside the glass, a drawn citrus wedge on the rim, and various abstract sketches and faces 
+surrounding the glass against a clean, white background. The style seamlessly blends a realistic, 
 lit photograph with loose, hand-drawn marker artistry, creating a playful and artistic juxtaposition.
 """
-
 
 DEFAULT_NEGATIVE = """
 low quality, blurry, unnatural skin tone, bad lighting,
@@ -1125,9 +723,7 @@ pixelated, noise, oversharpen, soft focus
 # ============================================================
 
 custom_css = """
-
 .gradio-container {
-
     font-family:
         'SF Pro Display',
         -apple-system,
@@ -1135,48 +731,12 @@ custom_css = """
         sans-serif;
 }
 
-
 .lora-box {
-
-    border:
-        1px solid #888;
-
-    border-radius:
-        10px;
-
-    padding:
-        10px;
-
-    margin-bottom:
-        10px;
+    border: 1px solid #888;
+    border-radius: 10px;
+    padding: 10px;
 }
-
-
-.model-box {
-
-    border:
-        2px solid #666;
-
-    border-radius:
-        12px;
-
-    padding:
-        15px;
-
-    margin-bottom:
-        15px;
-}
-
 """
-
-
-# ============================================================
-# MODEL CHOICES
-# ============================================================
-
-MODEL_CHOICES = [
-    ORIGINAL_MODEL_NAME
-] + CHECKPOINT_FILES
 
 
 # ============================================================
@@ -1189,36 +749,22 @@ with gr.Blocks(
 ) as demo:
 
 
-    # ========================================================
-    # HEADER
-    # ========================================================
+    gr.HTML("""
+<div style="
+    width:100%;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    margin:20px 0;
+">
 
-    gr.HTML(
-        """
-        <div style="
-            width:100%;
-            display:flex;
-            flex-direction:column;
-            align-items:center;
-            justify-content:center;
-            margin:20px 0;
-        ">
+<h1 style="font-size:2.5em; margin-bottom:10px;">
+Krea-2 Turbo + Multiple LoRA
+</h1>
 
-        <h1 style="
-            font-size:2.5em;
-            margin-bottom:10px;
-        ">
-            Krea-2 Turbo + Checkpoint + Multiple LoRA
-        </h1>
-
-        <div>
-            Select Original Krea-2 or a checkpoint
-            and stack up to 5 LoRAs.
-        </div>
-
-        </div>
-        """
-    )
+</div>
+""")
 
 
     # ========================================================
@@ -1235,55 +781,16 @@ with gr.Blocks(
         with gr.Column():
 
 
-            # =================================================
-            # MODEL SELECTION
-            # =================================================
-
-            with gr.Group(
-                elem_classes="model-box"
-            ):
-
-                gr.Markdown(
-                    "## 🧠 Model Selection"
-                )
-
-
-                model_source = gr.Dropdown(
-
-                    choices=MODEL_CHOICES,
-
-                    value=ORIGINAL_MODEL_NAME,
-
-                    label="Model Source",
-
-                    info=(
-                        "Original Krea-2 Turbo or a "
-                        "checkpoint from "
-                        "models/checkpoints"
-                    )
-                )
-
-
-            # =================================================
-            # PROMPTS
-            # =================================================
-
             positive = gr.Textbox(
-
                 DEFAULT_POSITIVE,
-
                 label="Positive Prompt",
-
                 lines=6
             )
 
 
             negative = gr.Textbox(
-
                 DEFAULT_NEGATIVE,
-
-                label="Negative Prompt",
-
+                label="Negative Prompt (Note: Krea-2 natively uses ZeroOut for negatives)",
                 lines=5
             )
 
@@ -1295,31 +802,20 @@ with gr.Blocks(
             with gr.Row():
 
                 width = gr.Number(
-
                     value=1024,
-
                     label="Width",
-
                     precision=0
                 )
-
 
                 height = gr.Number(
-
                     value=1024,
-
                     label="Height",
-
                     precision=0
                 )
 
-
                 seed = gr.Number(
-
                     value=0,
-
                     label="Seed (0 = random)",
-
                     precision=0
                 )
 
@@ -1327,24 +823,16 @@ with gr.Blocks(
             with gr.Row():
 
                 steps = gr.Slider(
-
                     4,
                     25,
-
                     value=8,
-
                     step=1,
-
                     label="Steps"
                 )
 
-
                 batch_size = gr.Number(
-
                     value=1,
-
                     label="Batch Size",
-
                     precision=0
                 )
 
@@ -1363,263 +851,182 @@ with gr.Blocks(
                     """
                     ### Stack multiple LoRAs
 
-                    Leave a slot empty if you
-                    don't want to use it.
+                    Leave a slot empty if you don't want to use it.
                     """
                 )
 
 
-                # =============================================
+                # ---------------------------------------------
                 # LORA 1
-                # =============================================
+                # ---------------------------------------------
 
                 with gr.Group(
                     elem_classes="lora-box"
                 ):
 
-                    gr.Markdown(
-                        "### LoRA 1"
-                    )
-
+                    gr.Markdown("### LoRA 1")
 
                     lora1 = gr.Dropdown(
-
                         choices=[""] + LORA_FILES,
-
                         value="",
-
                         label="LoRA"
                     )
-
 
                     with gr.Row():
 
                         lora1_strength = gr.Slider(
-
                             -9.0,
                             9.0,
-
                             value=1,
-
                             step=0.05,
-
                             label="Model Strength"
                         )
 
-
                         lora1_clip = gr.Slider(
-
                             -2.0,
                             2.0,
-
                             value=1,
-
                             step=0.05,
-
                             label="CLIP Strength"
                         )
 
 
-                # =============================================
+                # ---------------------------------------------
                 # LORA 2
-                # =============================================
+                # ---------------------------------------------
 
                 with gr.Group(
                     elem_classes="lora-box"
                 ):
 
-                    gr.Markdown(
-                        "### LoRA 2"
-                    )
-
+                    gr.Markdown("### LoRA 2")
 
                     lora2 = gr.Dropdown(
-
                         choices=[""] + LORA_FILES,
-
                         value="",
-
                         label="LoRA"
                     )
-
 
                     with gr.Row():
 
                         lora2_strength = gr.Slider(
-
                             -9.0,
                             9.0,
-
                             value=1,
-
                             step=0.05,
-
                             label="Model Strength"
                         )
 
-
                         lora2_clip = gr.Slider(
-
                             -2.0,
                             2.0,
-
                             value=1,
-
                             step=0.05,
-
                             label="CLIP Strength"
                         )
 
 
-                # =============================================
+                # ---------------------------------------------
                 # LORA 3
-                # =============================================
+                # ---------------------------------------------
 
                 with gr.Group(
                     elem_classes="lora-box"
                 ):
 
-                    gr.Markdown(
-                        "### LoRA 3"
-                    )
-
+                    gr.Markdown("### LoRA 3")
 
                     lora3 = gr.Dropdown(
-
                         choices=[""] + LORA_FILES,
-
                         value="",
-
                         label="LoRA"
                     )
-
 
                     with gr.Row():
 
                         lora3_strength = gr.Slider(
-
                             -9.0,
                             9.0,
-
                             value=1,
-
                             step=0.05,
-
                             label="Model Strength"
                         )
 
-
                         lora3_clip = gr.Slider(
-
                             -2.0,
                             2.0,
-
                             value=1,
-
                             step=0.05,
-
                             label="CLIP Strength"
                         )
 
 
-                # =============================================
+                # ---------------------------------------------
                 # LORA 4
-                # =============================================
+                # ---------------------------------------------
 
                 with gr.Group(
                     elem_classes="lora-box"
                 ):
 
-                    gr.Markdown(
-                        "### LoRA 4"
-                    )
-
+                    gr.Markdown("### LoRA 4")
 
                     lora4 = gr.Dropdown(
-
                         choices=[""] + LORA_FILES,
-
                         value="",
-
                         label="LoRA"
                     )
-
 
                     with gr.Row():
 
                         lora4_strength = gr.Slider(
-
                             -9.0,
                             9.0,
-
                             value=1,
-
                             step=0.05,
-
                             label="Model Strength"
                         )
 
-
                         lora4_clip = gr.Slider(
-
                             -2.0,
                             2.0,
-
                             value=1,
-
                             step=0.05,
-
                             label="CLIP Strength"
                         )
 
 
-                # =============================================
+                # ---------------------------------------------
                 # LORA 5
-                # =============================================
+                # ---------------------------------------------
 
                 with gr.Group(
                     elem_classes="lora-box"
                 ):
 
-                    gr.Markdown(
-                        "### LoRA 5"
-                    )
-
+                    gr.Markdown("### LoRA 5")
 
                     lora5 = gr.Dropdown(
-
                         choices=[""] + LORA_FILES,
-
                         value="",
-
                         label="LoRA"
                     )
-
 
                     with gr.Row():
 
                         lora5_strength = gr.Slider(
-
                             -9.0,
                             9.0,
-
                             value=1,
-
                             step=0.05,
-
                             label="Model Strength"
                         )
 
-
                         lora5_clip = gr.Slider(
-
                             -2.0,
                             2.0,
-
                             value=1,
-
                             step=0.05,
-
                             label="CLIP Strength"
                         )
 
@@ -1636,27 +1043,18 @@ with gr.Blocks(
                 with gr.Row():
 
                     cfg = gr.Slider(
-
                         0.5,
                         4.0,
-
                         value=1.0,
-
                         step=0.1,
-
                         label="CFG"
                     )
 
-
                     denoise = gr.Slider(
-
                         0.1,
                         1.0,
-
                         value=1.0,
-
                         step=0.05,
-
                         label="Denoise"
                     )
 
@@ -1666,11 +1064,8 @@ with gr.Blocks(
             # =================================================
 
             run = gr.Button(
-
                 "🚀 Generate",
-
                 variant="primary",
-
                 size="lg"
             )
 
@@ -1681,25 +1076,19 @@ with gr.Blocks(
 
         with gr.Column():
 
-
             output_img = gr.Image(
-
                 label="Generated Image",
-
                 height=600
             )
 
 
             download_image = gr.File(
-
                 label="Download Image"
             )
 
 
             used_seed = gr.Textbox(
-
                 label="Seed Used",
-
                 interactive=False
             )
 
@@ -1714,47 +1103,35 @@ with gr.Blocks(
 
         inputs=[
 
-            # Model
-            model_source,
-
-            # Prompts
             positive,
             negative,
 
-            # Image
             width,
             height,
 
-            # Seed / steps
             seed,
             steps,
             batch_size,
 
-            # Advanced
             cfg,
             denoise,
 
-            # LoRA 1
             lora1,
             lora1_strength,
             lora1_clip,
 
-            # LoRA 2
             lora2,
             lora2_strength,
             lora2_clip,
 
-            # LoRA 3
             lora3,
             lora3_strength,
             lora3_clip,
 
-            # LoRA 4
             lora4,
             lora4_strength,
             lora4_clip,
 
-            # LoRA 5
             lora5,
             lora5_strength,
             lora5_clip
