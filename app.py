@@ -1385,9 +1385,9 @@ with gr.Blocks(
 
                     lora1 = gr.Dropdown(
 
-                        choices=LORA_FILES,
+                        choices=[""] + LORA_FILES,
 
-                        value=LORA_FILES[0],
+                        value="",
 
                         label="LoRA"
                     )
