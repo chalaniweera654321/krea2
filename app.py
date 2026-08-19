@@ -51,7 +51,7 @@ ConditioningZeroOut = NODE_CLASS_MAPPINGS.get(
 # ============================================================
 
 LORA_DIR = "./models/loras"
-CHECKPOINT_DIR = "./models/checkpoints"
+CHECKPOINT_DIR = "./models/diffusion_models"
 SAVE_DIR = "./results"
 
 os.makedirs(LORA_DIR, exist_ok=True)
@@ -342,7 +342,7 @@ def load_selected_model(model_source):
     # --------------------------------------------------------
 
     print(
-        "\n🎯 Loading checkpoint:"
+        "\n🎯 Loading Krea-compatible checkpoint:"
         f"\n   {checkpoint_path}"
     )
 
@@ -350,29 +350,28 @@ def load_selected_model(model_source):
 
     with torch.inference_mode():
 
-        model, clip, vae = (
-            CheckpointLoaderSimple.load_checkpoint(
-                model_source
-            )
-        )
+        model = UNETLoader.load_unet(
+            model_source,
+            "default"
+        )[0]
 
-
-    checkpoint_cache[model_source] = (
-        model,
-        clip,
-        vae
-    )
 
     print(
-        "✅ Checkpoint loaded in "
+        "✅ Diffusion model loaded in "
         f"{time.time() - t0:.1f}s"
     )
+
+    # Krea checkpoints use the same Qwen3-VL
+    # and Krea VAE as the original model.
+
+    clip = original_clip
+    vae = original_vae
 
     return (
         model,
         clip,
         vae,
-        False,
+        True,
         model_source
     )
 
