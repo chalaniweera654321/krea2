@@ -1289,7 +1289,7 @@ Krea-2 Turbo + 10 LoRA
         # RIGHT
         # ====================================================
 
-        with gr.Column:
+        with gr.Column():
 
 
             output_img = gr.Image(
