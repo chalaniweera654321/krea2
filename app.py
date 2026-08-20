@@ -967,7 +967,7 @@ Krea-2 Turbo + 10 LoRA
             # IMAGE SETTINGS
             # =================================================
 
-            with gr.Row:
+            with gr.Row():
 
 
                 width = gr.Number(
@@ -995,7 +995,7 @@ Krea-2 Turbo + 10 LoRA
             # STEPS / BATCH
             # =================================================
 
-            with gr.Row:
+            with gr.Row():
 
 
                 steps = gr.Slider(
@@ -1037,7 +1037,7 @@ Krea-2 Turbo + 10 LoRA
                 # LORA 1
                 # =================================================
 
-                with gr.Row:
+                with gr.Row():
 
                     lora1 = gr.Dropdown(
                         choices=[""] + LORA_FILES,
@@ -1058,7 +1058,7 @@ Krea-2 Turbo + 10 LoRA
                 # LORA 2
                 # =================================================
 
-                with gr.Row:
+                with gr.Row():
 
                     lora2 = gr.Dropdown(
                         choices=[""] + LORA_FILES,
@@ -1079,7 +1079,7 @@ Krea-2 Turbo + 10 LoRA
                 # LORA 3
                 # =================================================
 
-                with gr.Row:
+                with gr.Row():
 
                     lora3 = gr.Dropdown(
                         choices=[""] + LORA_FILES,
@@ -1100,7 +1100,7 @@ Krea-2 Turbo + 10 LoRA
                 # LORA 4
                 # =================================================
 
-                with gr.Row:
+                with gr.Row():
 
                     lora4 = gr.Dropdown(
                         choices=[""] + LORA_FILES,
@@ -1121,7 +1121,7 @@ Krea-2 Turbo + 10 LoRA
                 # LORA 5
                 # =================================================
 
-                with gr.Row:
+                with gr.Row():
 
                     lora5 = gr.Dropdown(
                         choices=[""] + LORA_FILES,
@@ -1142,7 +1142,7 @@ Krea-2 Turbo + 10 LoRA
                 # LORA 6
                 # =================================================
 
-                with gr.Row:
+                with gr.Row():
 
                     lora6 = gr.Dropdown(
                         choices=[""] + LORA_FILES,
@@ -1163,7 +1163,7 @@ Krea-2 Turbo + 10 LoRA
                 # LORA 7
                 # =================================================
 
-                with gr.Row:
+                with gr.Row():
 
                     lora7 = gr.Dropdown(
                         choices=[""] + LORA_FILES,
@@ -1184,7 +1184,7 @@ Krea-2 Turbo + 10 LoRA
                 # LORA 8
                 # =================================================
 
-                with gr.Row:
+                with gr.Row():
 
                     lora8 = gr.Dropdown(
                         choices=[""] + LORA_FILES,
@@ -1205,7 +1205,7 @@ Krea-2 Turbo + 10 LoRA
                 # LORA 9
                 # =================================================
 
-                with gr.Row:
+                with gr.Row():
 
                     lora9 = gr.Dropdown(
                         choices=[""] + LORA_FILES,
@@ -1226,7 +1226,7 @@ Krea-2 Turbo + 10 LoRA
                 # LORA 10
                 # =================================================
 
-                with gr.Row:
+                with gr.Row():
 
                     lora10 = gr.Dropdown(
                         choices=[""] + LORA_FILES,
@@ -1253,7 +1253,7 @@ Krea-2 Turbo + 10 LoRA
             ):
 
 
-                with gr.Row:
+                with gr.Row():
 
 
                     cfg = gr.Slider(
