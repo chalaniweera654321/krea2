@@ -687,19 +687,68 @@ custom_css = """
     margin: 6px 0;
 }
 
-.lora-strength input {
-    text-align: center !important;
+.lora-list {
+    width: 100%;
 }
 
-.lora-name input {
-    font-size: 16px !important;
+.lora-row {
+    display: flex !important;
+    width: 100%;
+    align-items: center;
+    gap: 10px;
+    margin: 7px 0;
 }
 
-.lora-remove {
+.lora-strength-input {
+    width: 72px;
+    min-width: 72px;
+    height: 42px;
+    box-sizing: border-box;
+    padding: 0 8px;
+    text-align: center;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: var(--input-background-fill);
+    color: var(--body-text-color);
+    font-size: 16px;
+}
+
+.lora-name-display {
+    flex: 1;
+    min-width: 0;
+    height: 42px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: var(--input-background-fill);
+    color: var(--body-text-color);
+    font-size: 16px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.lora-remove-button {
+    width: 44px !important;
     min-width: 44px !important;
     max-width: 44px !important;
     height: 42px !important;
+    padding: 0 !important;
+    border: 1px solid #888 !important;
+    border-radius: 6px !important;
     font-size: 20px !important;
+    cursor: pointer;
+}
+
+.lora-empty {
+    padding: 12px;
+    opacity: 0.7;
+    text-align: center;
+    border: 1px dashed #888;
+    border-radius: 6px;
 }
 
 .lora-picker {
@@ -713,59 +762,244 @@ custom_css = """
 # DYNAMIC GRADIO UI
 # ============================================================
 
-# Each item is:
-# {"name": "oil_paint.safetensors", "strength": 1.0}
-lora_state = gr.State([])
+# IMPORTANT:
+# Do NOT use gr.render()/gr.State for the LoRA rows here.
+# Some Gradio versions can leave dynamically-rendered components in the
+# event graph after they are removed, producing: KeyError: 0
+# The LoRA rows below are normal HTML controlled by JavaScript. A hidden
+# Gradio Textbox stores the current LoRA list as JSON.
+
+import json
+import html
 
 
-def add_lora(selected_lora, current_loras):
-    """Add the selected LoRA to the unlimited LoRA stack."""
-    current_loras = list(current_loras or [])
+def parse_lora_json(value):
+    if isinstance(value, list):
+        data = value
+    else:
+        try:
+            data = json.loads(value or "[]")
+        except Exception:
+            data = []
+
+    result = []
+    if not isinstance(data, list):
+        return result
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        try:
+            strength = float(item.get("strength", 1.0))
+        except Exception:
+            strength = 1.0
+        strength = max(-9.0, min(9.0, strength))
+        result.append({"name": name, "strength": strength})
+
+    return result
+
+
+def lora_json_string(loras):
+    return json.dumps(parse_lora_json(loras), separators=(",", ":"))
+
+
+def render_lora_rows(loras):
+    loras = parse_lora_json(loras)
+
+    if not loras:
+        return '''
+        <div class="lora-empty">
+            Select a LoRA from the dropdown above to add it.
+        </div>
+        '''
+
+    rows = []
+    for i, item in enumerate(loras):
+        name = html.escape(item["name"], quote=True)
+        strength = item["strength"]
+        rows.append(f'''
+        <div class="lora-row" data-index="{i}">
+            <input class="lora-strength-input" type="number"
+                   min="-9" max="9" step="0.05"
+                   value="{strength:g}" title="Model Strength">
+            <div class="lora-name-display" title="{name}">{name}</div>
+            <button type="button" class="lora-remove-button"
+                    data-index="{i}" title="Remove LoRA">✕</button>
+        </div>
+        ''')
+
+    return '<div class="lora-list">' + "".join(rows) + '</div>'
+
+
+def add_lora(selected_lora, current_json):
+    loras = parse_lora_json(current_json)
 
     if not selected_lora:
-        return current_loras, gr.update(value=None)
+        return render_lora_rows(loras), lora_json_string(loras), gr.update(value=None)
 
-    current_loras.append({
-        "name": selected_lora,
-        "strength": 1.0
-    })
+    loras.append({"name": str(selected_lora), "strength": 1.0})
 
-    print(
-        f"➕ Added LoRA: {selected_lora} "
-        f"(Model Strength: 1.0)"
+    print(f"➕ Added LoRA: {selected_lora} (Model Strength: 1.0)")
+
+    return (
+        render_lora_rows(loras),
+        lora_json_string(loras),
+        gr.update(value=None)
     )
 
-    # Reset the picker so the same LoRA can be selected again if desired.
-    return current_loras, gr.update(value=None)
 
+def generate_ui(
+    positive_prompt,
+    negative_prompt,
+    width,
+    height,
+    seed,
+    steps,
+    batch_size,
+    cfg,
+    denoise,
+    lora_json,
+    sampler_name="euler",
+    scheduler="simple"
+):
+    loras = parse_lora_json(lora_json)
 
-def remove_lora(current_loras, index):
-    """Remove one LoRA from the stack."""
-    current_loras = list(current_loras or [])
+    lora_names = []
+    lora_strengths = []
+    clip_strengths = []
 
-    if 0 <= index < len(current_loras):
-        removed = current_loras.pop(index)
-        print(f"❌ Removed LoRA: {removed['name']}")
+    for item in loras:
+        lora_names.append(item["name"])
+        lora_strengths.append(float(item["strength"]))
+        clip_strengths.append(1.0)
 
-    return current_loras
-
-
-def update_lora_strength(current_loras, index, strength):
-    """Update the Model Strength for one LoRA."""
-    current_loras = list(current_loras or [])
-
-    if 0 <= index < len(current_loras):
-        current_loras[index] = {
-            **current_loras[index],
-            "strength": float(strength)
+    input_data = {
+        "input": {
+            "positive_prompt": positive_prompt,
+            "negative_prompt": negative_prompt,
+            "width": int(width),
+            "height": int(height),
+            "batch_size": int(batch_size),
+            "seed": int(seed),
+            "steps": int(steps),
+            "cfg": float(cfg),
+            "sampler_name": sampler_name,
+            "scheduler": scheduler,
+            "denoise": float(denoise),
+            "lora_names": lora_names,
+            "lora_strengths": lora_strengths,
+            "clip_strengths": clip_strengths
         }
+    }
 
-    return current_loras
+    image_path, used_seed = generate(input_data)
+    return image_path, image_path, used_seed
 
+
+custom_js = r'''
+function getLoraJsonElement() {
+    return document.querySelector("#lora_json textarea, #lora_json input");
+}
+
+function getLoraList() {
+    const el = getLoraJsonElement();
+    if (!el) return [];
+    try {
+        const parsed = JSON.parse(el.value || "[]");
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        console.error("Could not parse LoRA JSON:", e);
+        return [];
+    }
+}
+
+function setLoraList(list) {
+    const el = getLoraJsonElement();
+    if (!el) return;
+
+    const value = JSON.stringify(list);
+    const taSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype, "value"
+    )?.set;
+    const inputSetter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, "value"
+    )?.set;
+
+    if (el.tagName === "TEXTAREA" && taSetter) taSetter.call(el, value);
+    else if (inputSetter) inputSetter.call(el, value);
+    else el.value = value;
+
+    el.dispatchEvent(new Event("input", {bubbles: true}));
+    el.dispatchEvent(new Event("change", {bubbles: true}));
+}
+
+document.addEventListener("input", function(event) {
+    const input = event.target.closest(".lora-strength-input");
+    if (!input) return;
+
+    const row = input.closest(".lora-row");
+    if (!row) return;
+
+    const index = Number(row.dataset.index);
+    const list = getLoraList();
+    if (!Number.isInteger(index) || !list[index]) return;
+
+    let strength = Number(input.value);
+    if (!Number.isFinite(strength)) strength = 1.0;
+    strength = Math.max(-9, Math.min(9, strength));
+
+    list[index].strength = strength;
+    setLoraList(list);
+});
+
+document.addEventListener("click", function(event) {
+    const button = event.target.closest(".lora-remove-button");
+    if (!button) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const row = button.closest(".lora-row");
+    if (!row) return;
+
+    const index = Number(row.dataset.index);
+    const list = getLoraList();
+    if (!Number.isInteger(index) || index < 0 || index >= list.length) return;
+
+    list.splice(index, 1);
+    setLoraList(list);
+
+    const panel = document.querySelector("#lora_list");
+    if (!panel) return;
+
+    const rows = panel.querySelectorAll(".lora-row");
+    if (rows[index]) rows[index].remove();
+
+    panel.querySelectorAll(".lora-row").forEach(function(r, i) {
+        r.dataset.index = i;
+        const btn = r.querySelector(".lora-remove-button");
+        if (btn) btn.dataset.index = i;
+    });
+
+    if (!panel.querySelector(".lora-row")) {
+        panel.innerHTML =
+            '<div class="lora-empty">Select a LoRA from the dropdown above to add it.</div>';
+    }
+});
+'''
+
+
+# ============================================================
+# GRADIO UI
+# ============================================================
 
 with gr.Blocks(
     theme=gr.themes.Soft(),
-    css=custom_css
+    css=custom_css,
+    js=custom_js
 ) as demo:
 
     gr.HTML("""
@@ -784,18 +1018,8 @@ with gr.Blocks(
     """)
 
     with gr.Row():
-
-        # ========================================================
-        # LEFT
-        # ========================================================
-
         with gr.Column():
-
-            positive = gr.Textbox(
-                DEFAULT_POSITIVE,
-                label="Positive Prompt",
-                lines=6
-            )
+            positive = gr.Textbox(DEFAULT_POSITIVE, label="Positive Prompt", lines=6)
 
             negative = gr.Textbox(
                 DEFAULT_NEGATIVE,
@@ -803,56 +1027,18 @@ with gr.Blocks(
                 lines=5
             )
 
-            # =====================================================
-            # IMAGE SETTINGS
-            # =====================================================
+            with gr.Row():
+                width = gr.Number(value=1024, label="Width", precision=0)
+                height = gr.Number(value=1024, label="Height", precision=0)
+                seed = gr.Number(value=0, label="Seed (0 = random)", precision=0)
 
             with gr.Row():
-
-                width = gr.Number(
-                    value=1024,
-                    label="Width",
-                    precision=0
-                )
-
-                height = gr.Number(
-                    value=1024,
-                    label="Height",
-                    precision=0
-                )
-
-                seed = gr.Number(
-                    value=0,
-                    label="Seed (0 = random)",
-                    precision=0
-                )
-
-            with gr.Row():
-
-                steps = gr.Slider(
-                    4,
-                    25,
-                    value=8,
-                    step=1,
-                    label="Steps"
-                )
-
-                batch_size = gr.Number(
-                    value=1,
-                    label="Batch Size",
-                    precision=0
-                )
-
-            # =====================================================
-            # LORA SETTINGS
-            # =====================================================
+                steps = gr.Slider(4, 25, value=8, step=1, label="Steps")
+                batch_size = gr.Number(value=1, label="Batch Size", precision=0)
 
             with gr.Group(elem_classes="lora-panel"):
-
                 gr.Markdown("### 🎨 LoRAs")
 
-                # This is the dropdown shown at the top.
-                # Selecting a LoRA immediately adds it below.
                 lora_picker = gr.Dropdown(
                     choices=LORA_FILES,
                     value=None,
@@ -861,162 +1047,46 @@ with gr.Blocks(
                     allow_custom_value=False
                 )
 
-                # Dynamic unlimited LoRA rows.
-                @gr.render(inputs=[lora_state])
-                def render_loras(loras):
+                # Normal hidden component. No gr.State and no gr.render.
+                lora_json = gr.Textbox(
+                    value="[]",
+                    elem_id="lora_json",
+                    visible=False
+                )
 
-                    if not loras:
-                        gr.Markdown(
-                            "*Select a LoRA from the dropdown above to add it.*"
-                        )
-                        return
+                lora_list = gr.HTML(
+                    value=render_lora_rows([]),
+                    elem_id="lora_list"
+                )
 
-                    for i, item in enumerate(loras):
-
-                        with gr.Row(elem_classes="lora-row", key=f"lora_row_{i}"):
-
-                            # Model Strength comes BEFORE the LoRA name,
-                            # matching the requested layout.
-                            strength = gr.Number(
-                                value=float(item.get("strength", 1.0)),
-                                minimum=-9.0,
-                                maximum=9.0,
-                                step=0.05,
-                                precision=2,
-                                label=None,
-                                scale=1,
-                                elem_classes="lora-strength",
-                                key=f"lora_strength_{i}"
-                            )
-
-                            gr.Textbox(
-                                value=item.get("name", ""),
-                                label=None,
-                                interactive=False,
-                                scale=5,
-                                elem_classes="lora-name",
-                                key=f"lora_name_{i}"
-                            )
-
-                            remove = gr.Button(
-                                "✕",
-                                variant="stop",
-                                scale=0,
-                                elem_classes="lora-remove",
-                                key=f"lora_remove_{i}"
-                            )
-
-                            strength.change(
-                                fn=lambda state, value, i=i:
-                                    update_lora_strength(
-                                        state, i, value
-                                    ),
-                                inputs=[lora_state, strength],
-                                outputs=[lora_state],
-                                key=f"lora_strength_change_{i}"
-                            )
-
-                            remove.click(
-                                fn=lambda state, i=i:
-                                    remove_lora(state, i),
-                                inputs=lora_state,
-                                outputs=[lora_state],
-                                key=f"lora_remove_click_{i}"
-                            )
-
-            # Add selected LoRA automatically.
             lora_picker.change(
                 fn=add_lora,
-                inputs=[lora_picker, lora_state],
-                outputs=[lora_state, lora_picker]
+                inputs=[lora_picker, lora_json],
+                outputs=[lora_list, lora_json, lora_picker]
             )
 
-            # =====================================================
-            # ADVANCED
-            # =====================================================
-
-            with gr.Accordion(
-                "⚙️ Advanced Settings",
-                open=False
-            ):
-
+            with gr.Accordion("⚙️ Advanced Settings", open=False):
                 with gr.Row():
+                    cfg = gr.Slider(0.5, 4.0, value=1.0, step=0.1, label="CFG")
+                    denoise = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="Denoise")
 
-                    cfg = gr.Slider(
-                        0.5,
-                        4.0,
-                        value=1.0,
-                        step=0.1,
-                        label="CFG"
-                    )
-
-                    denoise = gr.Slider(
-                        0.1,
-                        1.0,
-                        value=1.0,
-                        step=0.05,
-                        label="Denoise"
-                    )
-
-            # =====================================================
-            # GENERATE
-            # =====================================================
-
-            run = gr.Button(
-                "🚀 Generate",
-                variant="primary",
-                size="lg"
-            )
-
-        # ========================================================
-        # RIGHT
-        # ========================================================
+            run = gr.Button("🚀 Generate", variant="primary", size="lg")
 
         with gr.Column():
-
-            output_img = gr.Image(
-                label="Generated Image",
-                height=600
-            )
-
-            download_image = gr.File(
-                label="Download Image"
-            )
-
-            used_seed = gr.Textbox(
-                label="Seed Used",
-                interactive=False
-            )
-
-    # ============================================================
-    # BUTTON
-    # ============================================================
+            output_img = gr.Image(label="Generated Image", height=600)
+            download_image = gr.File(label="Download Image")
+            used_seed = gr.Textbox(label="Seed Used", interactive=False)
 
     run.click(
         fn=generate_ui,
-
         inputs=[
-            positive,
-            negative,
-
-            width,
-            height,
-
-            seed,
-            steps,
-            batch_size,
-
-            cfg,
-            denoise,
-
-            lora_state
+            positive, negative,
+            width, height,
+            seed, steps, batch_size,
+            cfg, denoise,
+            lora_json
         ],
-
-        outputs=[
-            output_img,
-            download_image,
-            used_seed
-        ]
+        outputs=[output_img, download_image, used_seed]
     )
 
 
