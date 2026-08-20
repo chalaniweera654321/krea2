@@ -838,16 +838,31 @@ def add_lora(selected_lora, current_json):
     loras = parse_lora_json(current_json)
 
     if not selected_lora:
-        return render_lora_rows(loras), lora_json_string(loras), gr.update(value=None)
+        used = {item["name"] for item in loras}
+        available = [name for name in LORA_FILES if name not in used]
+        return (
+            render_lora_rows(loras),
+            lora_json_string(loras),
+            gr.update(choices=available, value=None)
+        )
 
-    loras.append({"name": str(selected_lora), "strength": 1.0})
+    selected_lora = str(selected_lora).strip()
 
-    print(f"➕ Added LoRA: {selected_lora} (Model Strength: 1.0)")
+    # A LoRA can only be added once.
+    if any(item["name"] == selected_lora for item in loras):
+        print(f"⚠️ LoRA already added: {selected_lora}")
+    else:
+        loras.append({"name": selected_lora, "strength": 1.0})
+        print(f"➕ Added LoRA: {selected_lora} (Model Strength: 1.0)")
+
+    # Remove every selected LoRA from the dropdown.
+    used = {item["name"] for item in loras}
+    available = [name for name in LORA_FILES if name not in used]
 
     return (
         render_lora_rows(loras),
         lora_json_string(loras),
-        gr.update(value=None)
+        gr.update(choices=available, value=None)
     )
 
 
@@ -936,6 +951,30 @@ function setLoraList(list) {
     el.dispatchEvent(new Event("change", {bubbles: true}));
 }
 
+function syncVisibleRows(list) {
+    const panel = document.querySelector("#lora_list");
+    if (!panel) return;
+
+    if (!list.length) {
+        panel.innerHTML =
+            '<div class="lora-empty">Select a LoRA from the dropdown above to add it.</div>';
+        return;
+    }
+
+    const rows = panel.querySelectorAll(".lora-row");
+    rows.forEach(function(row, i) {
+        if (!list[i]) {
+            row.remove();
+            return;
+        }
+        row.dataset.index = i;
+        const input = row.querySelector(".lora-strength-input");
+        if (input) input.value = Number(list[i].strength).toFixed(2);
+        const btn = row.querySelector(".lora-remove-button");
+        if (btn) btn.dataset.index = i;
+    });
+}
+
 document.addEventListener("input", function(event) {
     const input = event.target.closest(".lora-strength-input");
     if (!input) return;
@@ -969,28 +1008,19 @@ document.addEventListener("click", function(event) {
     const list = getLoraList();
     if (!Number.isInteger(index) || index < 0 || index >= list.length) return;
 
+    // Remove it from the stored list.
     list.splice(index, 1);
     setLoraList(list);
 
-    const panel = document.querySelector("#lora_list");
-    if (!panel) return;
+    // Update the visible HTML immediately.
+    syncVisibleRows(list);
 
-    const rows = panel.querySelectorAll(".lora-row");
-    if (rows[index]) rows[index].remove();
-
-    panel.querySelectorAll(".lora-row").forEach(function(r, i) {
-        r.dataset.index = i;
-        const btn = r.querySelector(".lora-remove-button");
-        if (btn) btn.dataset.index = i;
-    });
-
-    if (!panel.querySelector(".lora-row")) {
-        panel.innerHTML =
-            '<div class="lora-empty">Select a LoRA from the dropdown above to add it.</div>';
-    }
+    // Ask the server to rebuild the dropdown choices. The removed LoRA
+    // becomes available again, while all currently selected LoRAs stay hidden.
+    const syncButton = document.querySelector("#sync_lora_ui button");
+    if (syncButton) syncButton.click();
 });
 '''
-
 
 # ============================================================
 # GRADIO UI
@@ -1044,6 +1074,7 @@ with gr.Blocks(
                     value=None,
                     label="Loras",
                     elem_classes="lora-picker",
+                    elem_id="lora_picker",
                     allow_custom_value=False
                 )
 
@@ -1063,6 +1094,28 @@ with gr.Blocks(
                 fn=add_lora,
                 inputs=[lora_picker, lora_json],
                 outputs=[lora_list, lora_json, lora_picker]
+            )
+
+            # Hidden server-side refresh used when a LoRA is removed.
+            sync_lora_ui = gr.Button(
+                "sync",
+                elem_id="sync_lora_ui",
+                visible=False
+            )
+
+            def sync_lora_ui_fn(current_json):
+                loras = parse_lora_json(current_json)
+                used = {item["name"] for item in loras}
+                available = [name for name in LORA_FILES if name not in used]
+                return (
+                    render_lora_rows(loras),
+                    gr.update(choices=available, value=None)
+                )
+
+            sync_lora_ui.click(
+                fn=sync_lora_ui_fn,
+                inputs=[lora_json],
+                outputs=[lora_list, lora_picker]
             )
 
             with gr.Accordion("⚙️ Advanced Settings", open=False):
