@@ -862,7 +862,7 @@ with gr.Blocks(
                 )
 
                 # Dynamic unlimited LoRA rows.
-                @gr.render(inputs=lora_state)
+                @gr.render(inputs=[lora_state])
                 def render_loras(loras):
 
                     if not loras:
@@ -873,7 +873,7 @@ with gr.Blocks(
 
                     for i, item in enumerate(loras):
 
-                        with gr.Row(elem_classes="lora-row"):
+                        with gr.Row(elem_classes="lora-row", key=f"lora_row_{i}"):
 
                             # Model Strength comes BEFORE the LoRA name,
                             # matching the requested layout.
@@ -885,7 +885,8 @@ with gr.Blocks(
                                 precision=2,
                                 label=None,
                                 scale=1,
-                                elem_classes="lora-strength"
+                                elem_classes="lora-strength",
+                                key=f"lora_strength_{i}"
                             )
 
                             gr.Textbox(
@@ -893,14 +894,16 @@ with gr.Blocks(
                                 label=None,
                                 interactive=False,
                                 scale=5,
-                                elem_classes="lora-name"
+                                elem_classes="lora-name",
+                                key=f"lora_name_{i}"
                             )
 
                             remove = gr.Button(
                                 "✕",
                                 variant="stop",
                                 scale=0,
-                                elem_classes="lora-remove"
+                                elem_classes="lora-remove",
+                                key=f"lora_remove_{i}"
                             )
 
                             strength.change(
@@ -909,14 +912,16 @@ with gr.Blocks(
                                         state, i, value
                                     ),
                                 inputs=[lora_state, strength],
-                                outputs=lora_state
+                                outputs=[lora_state],
+                                key=f"lora_strength_change_{i}"
                             )
 
                             remove.click(
                                 fn=lambda state, i=i:
                                     remove_lora(state, i),
                                 inputs=lora_state,
-                                outputs=lora_state
+                                outputs=[lora_state],
+                                key=f"lora_remove_click_{i}"
                             )
 
             # Add selected LoRA automatically.
