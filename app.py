@@ -587,111 +587,55 @@ def generate_ui(
     cfg,
     denoise,
 
-    lora1,
-    lora1_strength,
-    lora1_clip,
-
-    lora2,
-    lora2_strength,
-    lora2_clip,
-
-    lora3,
-    lora3_strength,
-    lora3_clip,
-
-    lora4,
-    lora4_strength,
-    lora4_clip,
-
-    lora5,
-    lora5_strength,
-    lora5_clip,
+    lora_data,
 
     sampler_name="euler",
     scheduler="simple"
 ):
 
+    # lora_data is a list like:
+    # [{"name": "oil_paint.safetensors", "strength": 1.0}, ...]
 
-    lora_names = [
-        lora1,
-        lora2,
-        lora3,
-        lora4,
-        lora5
-    ]
+    lora_names = []
+    lora_strengths = []
+    clip_strengths = []
 
+    for item in (lora_data or []):
+        name = item.get("name", "")
+        strength = float(item.get("strength", 1.0))
 
-    lora_strengths = [
-        lora1_strength,
-        lora2_strength,
-        lora3_strength,
-        lora4_strength,
-        lora5_strength
-    ]
+        if name:
+            lora_names.append(name)
+            lora_strengths.append(strength)
 
-
-    clip_strengths = [
-        lora1_clip,
-        lora2_clip,
-        lora3_clip,
-        lora4_clip,
-        lora5_clip
-    ]
-
+            # Keep CLIP strength at 1.0 because the UI only exposes
+            # the requested Model Strength control.
+            clip_strengths.append(1.0)
 
     input_data = {
-
         "input": {
+            "positive_prompt": positive_prompt,
+            "negative_prompt": negative_prompt,
 
-            "positive_prompt":
-                positive_prompt,
+            "width": int(width),
+            "height": int(height),
+            "batch_size": int(batch_size),
 
-            "negative_prompt":
-                negative_prompt,
+            "seed": int(seed),
+            "steps": int(steps),
+            "cfg": float(cfg),
 
-            "width":
-                int(width),
+            "sampler_name": sampler_name,
+            "scheduler": scheduler,
+            "denoise": float(denoise),
 
-            "height":
-                int(height),
-
-            "batch_size":
-                int(batch_size),
-
-            "seed":
-                int(seed),
-
-            "steps":
-                int(steps),
-
-            "cfg":
-                float(cfg),
-
-            "sampler_name":
-                sampler_name,
-
-            "scheduler":
-                scheduler,
-
-            "denoise":
-                float(denoise),
-
-            "lora_names":
-                lora_names,
-
-            "lora_strengths":
-                lora_strengths,
-
-            "clip_strengths":
-                clip_strengths
+            "lora_names": lora_names,
+            "lora_strengths": lora_strengths,
+            "clip_strengths": clip_strengths
         }
     }
 
-
-    image_path, used_seed = generate(
-        input_data
-    )
-
+    image_path, used_seed = generate(input_data)
 
     return (
         image_path,
@@ -731,55 +675,121 @@ custom_css = """
         sans-serif;
 }
 
-.lora-box {
-    border: 1px solid #888;
-    border-radius: 10px;
-    padding: 10px;
+.lora-panel {
+    border: 1px solid #777;
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.lora-row {
+    width: 100%;
+    align-items: center;
+    margin: 6px 0;
+}
+
+.lora-strength input {
+    text-align: center !important;
+}
+
+.lora-name input {
+    font-size: 16px !important;
+}
+
+.lora-remove {
+    min-width: 44px !important;
+    max-width: 44px !important;
+    height: 42px !important;
+    font-size: 20px !important;
+}
+
+.lora-picker {
+    margin-bottom: 10px;
 }
 """
 
 
+
 # ============================================================
-# GRADIO UI
+# DYNAMIC GRADIO UI
 # ============================================================
+
+# Each item is:
+# {"name": "oil_paint.safetensors", "strength": 1.0}
+lora_state = gr.State([])
+
+
+def add_lora(selected_lora, current_loras):
+    """Add the selected LoRA to the unlimited LoRA stack."""
+    current_loras = list(current_loras or [])
+
+    if not selected_lora:
+        return current_loras, gr.update(value=None)
+
+    current_loras.append({
+        "name": selected_lora,
+        "strength": 1.0
+    })
+
+    print(
+        f"➕ Added LoRA: {selected_lora} "
+        f"(Model Strength: 1.0)"
+    )
+
+    # Reset the picker so the same LoRA can be selected again if desired.
+    return current_loras, gr.update(value=None)
+
+
+def remove_lora(current_loras, index):
+    """Remove one LoRA from the stack."""
+    current_loras = list(current_loras or [])
+
+    if 0 <= index < len(current_loras):
+        removed = current_loras.pop(index)
+        print(f"❌ Removed LoRA: {removed['name']}")
+
+    return current_loras
+
+
+def update_lora_strength(current_loras, index, strength):
+    """Update the Model Strength for one LoRA."""
+    current_loras = list(current_loras or [])
+
+    if 0 <= index < len(current_loras):
+        current_loras[index] = {
+            **current_loras[index],
+            "strength": float(strength)
+        }
+
+    return current_loras
+
 
 with gr.Blocks(
     theme=gr.themes.Soft(),
     css=custom_css
 ) as demo:
 
-
     gr.HTML("""
-<div style="
-    width:100%;
-    display:flex;
-    flex-direction:column;
-    align-items:center;
-    justify-content:center;
-    margin:20px 0;
-">
-
-<h1 style="font-size:2.5em; margin-bottom:10px;">
-Krea-2 Turbo + Multiple LoRA
-</h1>
-
-</div>
-""")
-
-
-    # ========================================================
-    # MAIN LAYOUT
-    # ========================================================
+    <div style="
+        width:100%;
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        justify-content:center;
+        margin:20px 0;
+    ">
+        <h1 style="font-size:2.5em; margin-bottom:10px;">
+            Krea-2 Turbo + Multiple LoRA
+        </h1>
+    </div>
+    """)
 
     with gr.Row():
 
-
-        # ====================================================
+        # ========================================================
         # LEFT
-        # ====================================================
+        # ========================================================
 
         with gr.Column():
-
 
             positive = gr.Textbox(
                 DEFAULT_POSITIVE,
@@ -787,17 +797,15 @@ Krea-2 Turbo + Multiple LoRA
                 lines=6
             )
 
-
             negative = gr.Textbox(
                 DEFAULT_NEGATIVE,
                 label="Negative Prompt (Note: Krea-2 natively uses ZeroOut for negatives)",
                 lines=5
             )
 
-
-            # =================================================
+            # =====================================================
             # IMAGE SETTINGS
-            # =================================================
+            # =====================================================
 
             with gr.Row():
 
@@ -819,7 +827,6 @@ Krea-2 Turbo + Multiple LoRA
                     precision=0
                 )
 
-
             with gr.Row():
 
                 steps = gr.Slider(
@@ -836,204 +843,92 @@ Krea-2 Turbo + Multiple LoRA
                     precision=0
                 )
 
-
-            # =================================================
+            # =====================================================
             # LORA SETTINGS
-            # =================================================
+            # =====================================================
 
-            with gr.Accordion(
-                "🎨 LoRA Settings",
-                open=True
-            ):
+            with gr.Group(elem_classes="lora-panel"):
 
+                gr.Markdown("### 🎨 LoRAs")
 
-                gr.Markdown(
-                    """
-                    ### Stack multiple LoRAs
-
-                    Leave a slot empty if you don't want to use it.
-                    """
+                # This is the dropdown shown at the top.
+                # Selecting a LoRA immediately adds it below.
+                lora_picker = gr.Dropdown(
+                    choices=LORA_FILES,
+                    value=None,
+                    label="Loras",
+                    elem_classes="lora-picker",
+                    allow_custom_value=False
                 )
 
+                # Dynamic unlimited LoRA rows.
+                @gr.render(inputs=lora_state)
+                def render_loras(loras):
 
-                # ---------------------------------------------
-                # LORA 1
-                # ---------------------------------------------
-
-                with gr.Group(
-                    elem_classes="lora-box"
-                ):
-
-                    gr.Markdown("### LoRA 1")
-
-                    lora1 = gr.Dropdown(
-                        choices=[""] + LORA_FILES,
-                        value="",
-                        label="LoRA"
-                    )
-
-                    with gr.Row():
-
-                        lora1_strength = gr.Slider(
-                            -9.0,
-                            9.0,
-                            value=1,
-                            step=0.05,
-                            label="Model Strength"
+                    if not loras:
+                        gr.Markdown(
+                            "*Select a LoRA from the dropdown above to add it.*"
                         )
+                        return
 
-                        lora1_clip = gr.Slider(
-                            -2.0,
-                            2.0,
-                            value=1,
-                            step=0.05,
-                            label="CLIP Strength"
-                        )
+                    for i, item in enumerate(loras):
 
+                        with gr.Row(elem_classes="lora-row"):
 
-                # ---------------------------------------------
-                # LORA 2
-                # ---------------------------------------------
+                            # Model Strength comes BEFORE the LoRA name,
+                            # matching the requested layout.
+                            strength = gr.Number(
+                                value=float(item.get("strength", 1.0)),
+                                minimum=-9.0,
+                                maximum=9.0,
+                                step=0.05,
+                                precision=2,
+                                label=None,
+                                scale=1,
+                                elem_classes="lora-strength"
+                            )
 
-                with gr.Group(
-                    elem_classes="lora-box"
-                ):
+                            gr.Textbox(
+                                value=item.get("name", ""),
+                                label=None,
+                                interactive=False,
+                                scale=5,
+                                elem_classes="lora-name"
+                            )
 
-                    gr.Markdown("### LoRA 2")
+                            remove = gr.Button(
+                                "✕",
+                                variant="stop",
+                                scale=0,
+                                elem_classes="lora-remove"
+                            )
 
-                    lora2 = gr.Dropdown(
-                        choices=[""] + LORA_FILES,
-                        value="",
-                        label="LoRA"
-                    )
+                            strength.change(
+                                fn=lambda state, value, i=i:
+                                    update_lora_strength(
+                                        state, i, value
+                                    ),
+                                inputs=[lora_state, strength],
+                                outputs=lora_state
+                            )
 
-                    with gr.Row():
+                            remove.click(
+                                fn=lambda state, i=i:
+                                    remove_lora(state, i),
+                                inputs=lora_state,
+                                outputs=lora_state
+                            )
 
-                        lora2_strength = gr.Slider(
-                            -9.0,
-                            9.0,
-                            value=1,
-                            step=0.05,
-                            label="Model Strength"
-                        )
+            # Add selected LoRA automatically.
+            lora_picker.change(
+                fn=add_lora,
+                inputs=[lora_picker, lora_state],
+                outputs=[lora_state, lora_picker]
+            )
 
-                        lora2_clip = gr.Slider(
-                            -2.0,
-                            2.0,
-                            value=1,
-                            step=0.05,
-                            label="CLIP Strength"
-                        )
-
-
-                # ---------------------------------------------
-                # LORA 3
-                # ---------------------------------------------
-
-                with gr.Group(
-                    elem_classes="lora-box"
-                ):
-
-                    gr.Markdown("### LoRA 3")
-
-                    lora3 = gr.Dropdown(
-                        choices=[""] + LORA_FILES,
-                        value="",
-                        label="LoRA"
-                    )
-
-                    with gr.Row():
-
-                        lora3_strength = gr.Slider(
-                            -9.0,
-                            9.0,
-                            value=1,
-                            step=0.05,
-                            label="Model Strength"
-                        )
-
-                        lora3_clip = gr.Slider(
-                            -2.0,
-                            2.0,
-                            value=1,
-                            step=0.05,
-                            label="CLIP Strength"
-                        )
-
-
-                # ---------------------------------------------
-                # LORA 4
-                # ---------------------------------------------
-
-                with gr.Group(
-                    elem_classes="lora-box"
-                ):
-
-                    gr.Markdown("### LoRA 4")
-
-                    lora4 = gr.Dropdown(
-                        choices=[""] + LORA_FILES,
-                        value="",
-                        label="LoRA"
-                    )
-
-                    with gr.Row():
-
-                        lora4_strength = gr.Slider(
-                            -9.0,
-                            9.0,
-                            value=1,
-                            step=0.05,
-                            label="Model Strength"
-                        )
-
-                        lora4_clip = gr.Slider(
-                            -2.0,
-                            2.0,
-                            value=1,
-                            step=0.05,
-                            label="CLIP Strength"
-                        )
-
-
-                # ---------------------------------------------
-                # LORA 5
-                # ---------------------------------------------
-
-                with gr.Group(
-                    elem_classes="lora-box"
-                ):
-
-                    gr.Markdown("### LoRA 5")
-
-                    lora5 = gr.Dropdown(
-                        choices=[""] + LORA_FILES,
-                        value="",
-                        label="LoRA"
-                    )
-
-                    with gr.Row():
-
-                        lora5_strength = gr.Slider(
-                            -9.0,
-                            9.0,
-                            value=1,
-                            step=0.05,
-                            label="Model Strength"
-                        )
-
-                        lora5_clip = gr.Slider(
-                            -2.0,
-                            2.0,
-                            value=1,
-                            step=0.05,
-                            label="CLIP Strength"
-                        )
-
-
-            # =================================================
+            # =====================================================
             # ADVANCED
-            # =================================================
+            # =====================================================
 
             with gr.Accordion(
                 "⚙️ Advanced Settings",
@@ -1058,10 +953,9 @@ Krea-2 Turbo + Multiple LoRA
                         label="Denoise"
                     )
 
-
-            # =================================================
+            # =====================================================
             # GENERATE
-            # =================================================
+            # =====================================================
 
             run = gr.Button(
                 "🚀 Generate",
@@ -1069,10 +963,9 @@ Krea-2 Turbo + Multiple LoRA
                 size="lg"
             )
 
-
-        # ====================================================
+        # ========================================================
         # RIGHT
-        # ====================================================
+        # ========================================================
 
         with gr.Column():
 
@@ -1081,28 +974,23 @@ Krea-2 Turbo + Multiple LoRA
                 height=600
             )
 
-
             download_image = gr.File(
                 label="Download Image"
             )
-
 
             used_seed = gr.Textbox(
                 label="Seed Used",
                 interactive=False
             )
 
-
-    # ========================================================
+    # ============================================================
     # BUTTON
-    # ========================================================
+    # ============================================================
 
     run.click(
-
         fn=generate_ui,
 
         inputs=[
-
             positive,
             negative,
 
@@ -1116,29 +1004,10 @@ Krea-2 Turbo + Multiple LoRA
             cfg,
             denoise,
 
-            lora1,
-            lora1_strength,
-            lora1_clip,
-
-            lora2,
-            lora2_strength,
-            lora2_clip,
-
-            lora3,
-            lora3_strength,
-            lora3_clip,
-
-            lora4,
-            lora4_strength,
-            lora4_clip,
-
-            lora5,
-            lora5_strength,
-            lora5_clip
+            lora_state
         ],
 
         outputs=[
-
             output_img,
             download_image,
             used_seed
