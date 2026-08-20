@@ -296,7 +296,7 @@ def apply_loras(
 # SAVE HELPERS
 # ============================================================
 
-save_dir = "/content/drive/MyDrive/results"
+save_dir = "./results"
 
 os.makedirs(
     save_dir,
