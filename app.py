@@ -899,10 +899,7 @@ custom_css = """
 # GRADIO UI
 # ============================================================
 
-with gr.Blocks(
-    theme=gr.themes.Soft(),
-    css=custom_css
-) as demo:
+with gr.Blocks() as demo:
 
 
     # ========================================================
@@ -934,14 +931,14 @@ Krea-2 Turbo + 10 LoRA
     # MAIN LAYOUT
     # ========================================================
 
-    with gr.Row:
+    with gr.Row():
 
 
         # ====================================================
         # LEFT
         # ====================================================
 
-        with gr.Column:
+        with gr.Column():
 
 
             # =================================================
@@ -1480,5 +1477,7 @@ Krea-2 Turbo + 10 LoRA
 
 demo.launch(
     share=True,
-    debug=True
+    debug=True,
+    theme=gr.themes.Soft(),
+    css=custom_css
 )
