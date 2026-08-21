@@ -1,537 +1,978 @@
-import os, re, time, uuid, torch
+import os
+import time
+import shutil
+import re
+import uuid
+
+import torch
 import numpy as np
 from PIL import Image
-import gradio as gr
+
 from nodes import NODE_CLASS_MAPPINGS
 
+
 # ============================================================
-# KREA-2 EDIT
-# Reproduces the supplied Krea2Edit ComfyUI workflow:
+# KREA-2 EDIT + 10 LoRA
+# Based on the supplied Krea-2 edit workflow.
 #
-# source -> 1.4MP scale -> VAEEncode -> Krea2EditModelPatch
-# source -> 1.4MP scale ----------------> GroundedEncode
-# UNET -> LoRAs -> AuraFlow shift 4 -> Krea2Edit patch
-# GroundedEncode -> KSampler positive
-# ConditioningZeroOut -> KSampler negative
-# EmptySD3LatentImage -> KSampler latent
-# KSampler -> VAE Decode
+# Required custom node:
+#   https://github.com/lbouaraba/comfyui-krea2edit
 #
-# The workflow's second reference is supported as source_b.
+# The edit path mirrors the workflow:
+#   source image
+#      -> VAE encode --------------------+
+#      -> grounded Qwen3-VL conditioning |
+#                                        v
+#   UNET -> LoRAs -> Krea2EditModelPatch -> KSampler -> VAE decode
+#
+# Krea2Edit uses the source image twice:
+#   1) VAE latent = appearance/identity path
+#   2) Qwen3-VL grounded encode = semantic/image understanding path
 # ============================================================
 
-ROOT = "/root/ComfyUI"
-LORA_DIR = f"{ROOT}/models/loras"
-OUT_DIR = f"{ROOT}/output"
-os.makedirs(LORA_DIR, exist_ok=True)
-os.makedirs(OUT_DIR, exist_ok=True)
+print("\n" + "=" * 60)
+print("              KREA-2 EDIT + 10 LoRA")
+print("=" * 60)
 
-UNET_NAME = "krea2_turbo_fp8_scaled.safetensors"
-CLIP_NAME = "qwen3vl_4b_fp8_scaled.safetensors"
-VAE_NAME = "qwen_image_vae.safetensors"
 
-DEFAULT_ID_LORA = "krea/krea2_identity_edit_v1_2.safetensors"
+# ============================================================
+# COMFYUI NODES
+# ============================================================
 
-# Workflow values
-MEGAPIXELS = 1.4
-GROUNDING_PX = 768
-REF_BOOST = 1.0
-REF_BOOST_A = 1.0
-AURA_SHIFT = 4.0
-STEPS = 10
-CFG = 1.0
-DENOISE = 1.0
+UNETLoader = NODE_CLASS_MAPPINGS["UNETLoader"]()
+CLIPLoader = NODE_CLASS_MAPPINGS["CLIPLoader"]()
+VAELoader = NODE_CLASS_MAPPINGS["VAELoader"]()
+KSampler = NODE_CLASS_MAPPINGS["KSampler"]()
+VAEDecode = NODE_CLASS_MAPPINGS["VAEDecode"]()
+VAEEncode = NODE_CLASS_MAPPINGS["VAEEncode"]()
+EmptyLatentImage = NODE_CLASS_MAPPINGS["EmptyLatentImage"]()
+LoraLoader = NODE_CLASS_MAPPINGS["LoraLoader"]
 
-def node(name):
-    if name not in NODE_CLASS_MAPPINGS:
-        raise RuntimeError(
-            f'Missing ComfyUI node: "{name}". '
-            "Update ComfyUI and restart the notebook."
-        )
-    return NODE_CLASS_MAPPINGS[name]()
+Krea2EditModelPatch = NODE_CLASS_MAPPINGS["Krea2EditModelPatch"]()
+Krea2EditGroundedEncode = NODE_CLASS_MAPPINGS["Krea2EditGroundedEncode"]()
 
-UNETLoader = node("UNETLoader")
-CLIPLoader = node("CLIPLoader")
-VAELoader = node("VAELoader")
-VAEEncode = node("VAEEncode")
-VAEDecode = node("VAEDecode")
-KSampler = node("KSampler")
-ImageScale = node("ImageScaleToTotalPixels")
-Aura = node("ModelSamplingAuraFlow")
-ZeroOut = node("ConditioningZeroOut")
-Patch = node("Krea2EditModelPatch")
-Grounded = node("Krea2EditGroundedEncode")
 
-if "LoraLoaderModelOnly" in NODE_CLASS_MAPPINGS:
-    LoraModelOnly = node("LoraLoaderModelOnly")
-else:
-    LoraModelOnly = None
+# ============================================================
+# MODEL SETTINGS
+# ============================================================
 
-print("=" * 65)
-print("                 KREA-2 EDIT")
-print("=" * 65)
+BASE_MODEL = "krea2_turbo_fp8_scaled.safetensors"
+CLIP_MODEL = "qwen3vl_4b_fp8_scaled.safetensors"
+VAE_MODEL = "qwen_image_vae.safetensors"
+
+LORA_DIR = "./models/loras"
+
+# The Krea 2 Identity Edit LoRA is required for true identity/edit
+# behavior. It can also be selected as one of the normal LoRA slots.
+DEFAULT_EDIT_LORA = "krea\\krea2_identity_edit_v1_2.safetensors"
+
+
+# ============================================================
+# LOAD BASE MODELS ONCE
+# ============================================================
+
+startup_start = time.time()
 
 with torch.inference_mode():
-    print("[1/3] Loading Krea-2 UNet...")
-    BASE_MODEL = UNETLoader.load_unet(UNET_NAME, "default")[0]
 
-    print("[2/3] Loading Qwen3-VL...")
-    BASE_CLIP = CLIPLoader.load_clip(
-        CLIP_NAME, "krea2", "default"
+    print("\n[1/3] Loading Krea-2 UNet... ", end="", flush=True)
+    t0 = time.time()
+
+    base_model = UNETLoader.load_unet(
+        BASE_MODEL,
+        "default"
     )[0]
 
-    print("[3/3] Loading VAE...")
-    BASE_VAE = VAELoader.load_vae(VAE_NAME)[0]
+    print(f"done ({time.time() - t0:.1f}s)")
 
-print("Base models loaded.")
+    print("[2/3] Loading Qwen3-VL CLIP... ", end="", flush=True)
+    t0 = time.time()
 
-def lora_list():
-    out = [""]
-    for root, _, files in os.walk(LORA_DIR):
-        for f in files:
-            if f.lower().endswith(
-                (".safetensors", ".ckpt", ".pt")
-            ):
-                out.append(
-                    os.path.relpath(
-                        os.path.join(root, f), LORA_DIR
-                    ).replace("\\", "/")
-                )
-    return [""] + sorted(set(out[1:]))
+    base_clip = CLIPLoader.load_clip(
+        CLIP_MODEL,
+        type="krea2"
+    )[0]
 
-LORAS = lora_list()
-print(f"LoRAs found: {len(LORAS)-1}")
+    print(f"done ({time.time() - t0:.1f}s)")
 
-def load_image(path):
-    if not path:
-        raise ValueError("Input image is required.")
-    if isinstance(path, Image.Image):
-        im = path.convert("RGB")
-    else:
-        im = Image.open(path).convert("RGB")
-    return torch.from_numpy(
-        np.asarray(im).astype(np.float32) / 255.0
-    )[None, ...]
+    print("[3/3] Loading Qwen Image VAE... ", end="", flush=True)
+    t0 = time.time()
 
-def scale_1_4mp(image):
-    # Same purpose/settings as workflow ImageScaleToTotalPixels:
-    # lanczos, 1.4 MP, 64-pixel rounding.
-    h, w = image.shape[1], image.shape[2]
-    target = MEGAPIXELS * 1000000
-    s = (target / (w * h)) ** 0.5
-    nw = max(64, int(round(w * s / 64)) * 64)
-    nh = max(64, int(round(h * s / 64)) * 64)
+    vae = VAELoader.load_vae(
+        VAE_MODEL
+    )[0]
 
-    im = Image.fromarray(
-        (image[0].cpu().numpy() * 255).clip(0,255).astype(np.uint8)
-    )
-    im = im.resize((nw, nh), Image.Resampling.LANCZOS)
+    print(f"done ({time.time() - t0:.1f}s)")
 
-    return torch.from_numpy(
-        np.asarray(im).astype(np.float32) / 255.0
-    )[None, ...]
 
-def empty_sd3_latent(width, height):
-    # Exact EmptySD3LatentImage behavior:
-    # 16 channels, /8 spatial size, initialized to 0.0609.
-    return {
-        "samples": torch.ones(
-            [1, 16, height // 8, width // 8],
-            device=BASE_MODEL.model_management.intermediate_device()
-            if hasattr(BASE_MODEL, "model_management")
-            else "cpu"
-        ) * 0.0609
-    }
+print(
+    f"\nBase models loaded in "
+    f"{time.time() - startup_start:.1f}s"
+)
+print("=" * 60)
 
-def make_latent(width, height):
-    # Prefer the actual node when this ComfyUI exposes it.
-    if "EmptySD3LatentImage" in NODE_CLASS_MAPPINGS:
-        return node("EmptySD3LatentImage").generate(
-            width, height, 1
-        )[0]
 
-    # Compatible fallback for builds where the node mapping is absent.
-    import comfy.model_management
-    return {
-        "samples": torch.ones(
-            [1, 16, height // 8, width // 8],
-            device=comfy.model_management.intermediate_device()
-        ) * 0.0609
-    }
+# ============================================================
+# LORA DIRECTORY
+# ============================================================
 
-def apply_loras(model, names, strengths):
-    if not any(names):
-        return model, []
-
-    if LoraModelOnly is None:
-        raise RuntimeError(
-            "LoraLoaderModelOnly is unavailable in this ComfyUI build."
+def get_lora_files():
+    if not os.path.exists(LORA_DIR):
+        print(
+            f"\nLoRA directory not found:"
+            f"\n{os.path.abspath(LORA_DIR)}"
         )
+        return [""]
 
+    files = []
+
+    for root, dirs, filenames in os.walk(LORA_DIR):
+        for filename in filenames:
+            if filename.lower().endswith(
+                (".safetensors", ".pt", ".ckpt")
+            ):
+                relative_path = os.path.relpath(
+                    os.path.join(root, filename),
+                    LORA_DIR
+                )
+                files.append(relative_path)
+
+    files.sort()
+
+    if not files:
+        print(
+            "\nNo LoRAs found in:"
+            f"\n{os.path.abspath(LORA_DIR)}"
+        )
+        return [""]
+
+    print(f"\nFound {len(files)} LoRA(s)")
+    for f in files:
+        print(f"   • {f}")
+
+    return files
+
+
+LORA_FILES = get_lora_files()
+
+
+# ============================================================
+# IMAGE CONVERSION
+# ============================================================
+
+def image_to_tensor(image_path):
+    """
+    Convert a Gradio/PIL image path to ComfyUI IMAGE:
+        B,H,W,C float32 in [0,1]
+    """
+    if not image_path:
+        raise ValueError("Please upload an input image.")
+
+    if isinstance(image_path, Image.Image):
+        image = image_path.convert("RGB")
+    else:
+        image = Image.open(image_path).convert("RGB")
+
+    arr = np.asarray(image).astype(np.float32) / 255.0
+    tensor = torch.from_numpy(arr)[None, ...]
+    return tensor
+
+
+def resize_for_target(image, width, height):
+    """
+    Keep the source image intact for the grounded encoder.
+    Krea2Edit's pixel path performs the training-matched fit when
+    source_image + VAE + target_latent are supplied to the patch node.
+    """
+    return image
+
+
+# ============================================================
+# APPLY MULTIPLE LORAS
+# ============================================================
+
+def apply_loras(lora_names, lora_strengths):
+    model = base_model
+    clip = base_clip
     applied = []
 
-    for i, (name, strength) in enumerate(
-        zip(names, strengths), 1
-    ):
-        if not name:
+    for i in range(len(lora_names)):
+        lora_name = lora_names[i]
+
+        if not lora_name:
             continue
 
-        strength = float(strength)
+        try:
+            strength = float(lora_strengths[i])
+        except Exception:
+            strength = 1.0
+
         if strength == 0:
             continue
 
-        print(
-            f"  LoRA {i}: {name} @ {strength}"
-        )
+        print(f"\n   [{i + 1}] Applying LoRA:")
+        print(f"       {lora_name}")
+        print(f"       Strength: {strength}")
 
-        model = LoraModelOnly.load_lora_model_only(
+        t0 = time.time()
+
+        model, clip = LoraLoader.load_lora(
             model,
-            name.replace("\\", "/"),
+            clip,
+            lora_name,
+            strength,
             strength
-        )[0]
-
-        applied.append((name, strength))
-
-    return model, applied
-
-@torch.inference_mode()
-def generate(
-    source_path,
-    source_b_path,
-    prompt,
-    grounding_px,
-    ref_boost,
-    ref_boost_a,
-    steps,
-    cfg,
-    seed,
-    lora_names,
-    lora_strengths
-):
-    start = time.time()
-
-    if not source_path:
-        raise gr.Error("Upload an input image first.")
-
-    seed = int(seed)
-    if seed == 0:
-        seed = int(
-            torch.randint(
-                0, 1125899906842624, (1,)
-            ).item()
         )
 
-    print("\n" + "=" * 65)
-    print("NEW KREA-2 EDIT")
-    print("=" * 65)
+        applied.append(lora_name)
+        print(f"       done ({time.time() - t0:.1f}s)")
 
-    # --------------------------------------------------------
-    # 1. Load images
-    # --------------------------------------------------------
-    source = load_image(source_path)
-    source_b = load_image(source_b_path) if source_b_path else None
+    return model, clip, applied
 
-    # --------------------------------------------------------
-    # 2. Exact workflow preprocessing: 1.4 MP
-    # --------------------------------------------------------
-    source_scaled = scale_1_4mp(source)
-    source_b_scaled = (
-        scale_1_4mp(source_b)
-        if source_b is not None else None
+
+# ============================================================
+# SAVE HELPERS
+# ============================================================
+
+save_dir = "./results"
+os.makedirs(save_dir, exist_ok=True)
+
+
+def get_save_path(prompt):
+    safe_prompt = re.sub(
+        r"[^a-zA-Z0-9_-]",
+        "_",
+        prompt or "krea2_edit"
+    )[:45]
+
+    uid = uuid.uuid4().hex[:6]
+
+    return os.path.join(
+        save_dir,
+        f"{safe_prompt}_{uid}.png"
     )
 
-    height = source_scaled.shape[1]
-    width = source_scaled.shape[2]
 
-    print(f"Output grid: {width} x {height}")
+# ============================================================
+# GENERATION / EDIT
+# ============================================================
+
+@torch.inference_mode()
+def generate(input_data):
+
+    values = input_data["input"]
+
+    source_image_path = values["source_image"]
+    source_image_b_path = values.get("source_image_b")
+
+    edit_prompt = values["positive_prompt"]
+    negative_prompt = values["negative_prompt"]
+
+    width = int(values["width"])
+    height = int(values["height"])
+    seed = int(values["seed"])
+    steps = int(values["steps"])
+    cfg = float(values["cfg"])
+    sampler_name = values["sampler_name"]
+    scheduler = values["scheduler"]
+
+    grounding_px = int(values["grounding_px"])
+    ref_boost = float(values["ref_boost"])
+    ref_boost_a = float(values["ref_boost_a"])
+    fit_mode = values["fit_mode"]
+
+    lora_names = values["lora_names"]
+    lora_strengths = values["lora_strengths"]
+
+    print("\n" + "=" * 60)
+    print("                  NEW KREA-2 EDIT")
+    print("=" * 60)
+
+    total_start = time.time()
 
     # --------------------------------------------------------
-    # 3. Apply LoRAs BEFORE Krea2EditModelPatch
+    # SOURCE IMAGE
     # --------------------------------------------------------
-    model, applied = apply_loras(
-        BASE_MODEL,
+
+    print("\n[1/7] Loading source image...")
+
+    source_image = image_to_tensor(source_image_path)
+
+    source_image_b = None
+    if source_image_b_path:
+        source_image_b = image_to_tensor(source_image_b_path)
+
+    print(
+        f"      Source: "
+        f"{source_image.shape[2]}x{source_image.shape[1]}"
+    )
+
+    if source_image_b is not None:
+        print(
+            f"      Reference B: "
+            f"{source_image_b.shape[2]}x{source_image_b.shape[1]}"
+        )
+
+    # --------------------------------------------------------
+    # LORAS
+    # --------------------------------------------------------
+
+    print("\n[2/7] Applying LoRAs...")
+
+    model, clip, applied_loras = apply_loras(
         lora_names,
         lora_strengths
     )
 
+    print(
+        f"\n      Applied {len(applied_loras)} LoRA(s)"
+    )
+
     # --------------------------------------------------------
-    # 4. VAEEncode source(s)
+    # TARGET LATENT / OUTPUT SIZE
     # --------------------------------------------------------
+
+    print("\n[3/7] Creating target latent...")
+
+    target_latent = EmptyLatentImage.generate(
+        width,
+        height,
+        batch_size=1
+    )[0]
+
+    # --------------------------------------------------------
+    # SOURCE LATENTS
+    # --------------------------------------------------------
+
+    print("\n[4/7] Encoding source image...")
+
     source_latent = VAEEncode.encode(
-        BASE_VAE,
-        source_scaled
+        vae,
+        source_image
     )[0]
 
     source_latent_b = None
-    if source_b_scaled is not None:
+
+    if source_image_b is not None:
         source_latent_b = VAEEncode.encode(
-            BASE_VAE,
-            source_b_scaled
+            vae,
+            source_image_b
         )[0]
 
     # --------------------------------------------------------
-    # 5. Exact EmptySD3LatentImage target
+    # KREA EDIT MODEL PATCH
+    #
+    # This is the important difference from the old app.
+    # The normal text-to-image KSampler is NOT used directly.
+    # The model is patched with Krea2EditModelPatch so the
+    # source image becomes in-context appearance tokens.
     # --------------------------------------------------------
-    target_latent = make_latent(width, height)
 
-    # --------------------------------------------------------
-    # 6. Krea2EditModelPatch
-    # Exact workflow:
-    # ref_boost=1, ref_boost_a=1, fit_mode=fit,
-    # VAE + source_image + target_latent connected.
-    # --------------------------------------------------------
-    model = Patch.patch(
-        model=model,
-        source_latent=source_latent,
+    print("\n[5/7] Patching Krea-2 for image editing...")
+
+    patched_model = Krea2EditModelPatch.patch(
+        model,
+        source_latent,
         source_latent_b=source_latent_b,
-        ref_boost=float(ref_boost),
-        ref_boost_a=float(ref_boost_a),
+        ref_boost=ref_boost,
+        ref_boost_a=ref_boost_a,
         ref_boost_mask=None,
-        vae=BASE_VAE,
-        source_image=source_scaled,
-        source_image_b=source_b_scaled,
-        fit_mode="fit",
+        vae=vae,
+        source_image=source_image,
+        source_image_b=source_image_b,
+        fit_mode=fit_mode,
         target_latent=target_latent
     )[0]
 
     # --------------------------------------------------------
-    # 7. ModelSamplingAuraFlow shift=4
+    # GROUNDED POSITIVE CONDITIONING
+    #
+    # Qwen3-VL sees the source image + edit instruction.
     # --------------------------------------------------------
-    model = Aura.patch_aura(
-        model,
-        AURA_SHIFT
+
+    print("\n[6/7] Encoding grounded edit prompt...")
+
+    positive = Krea2EditGroundedEncode.encode(
+        clip,
+        edit_prompt,
+        image=source_image,
+        image_b=source_image_b,
+        grounding_px=grounding_px,
+        system_prompt=""
+    )[0]
+
+    # CFG=1 is the recommended Turbo path. If the user chooses
+    # a higher CFG, ground the negative conditioning on the same
+    # source image as recommended by the Krea2Edit workflow.
+    negative = Krea2EditGroundedEncode.encode(
+        clip,
+        negative_prompt or "",
+        image=source_image,
+        image_b=source_image_b,
+        grounding_px=grounding_px,
+        system_prompt=""
     )[0]
 
     # --------------------------------------------------------
-    # 8. Krea2EditGroundedEncode
+    # SAMPLE
     # --------------------------------------------------------
-    if not prompt:
-        prompt = "restore the image quality to 4k HDR."
 
-    positive = Grounded.encode(
-        clip=BASE_CLIP,
-        image=source_scaled,
-        image_b=source_b_scaled,
-        prompt=prompt,
-        grounding_px=int(grounding_px)
-    )[0]
+    print(
+        f"\n      Sampling: {steps} steps, "
+        f"CFG {cfg}, {sampler_name}/{scheduler}"
+    )
 
-    # Exact supplied workflow uses ConditioningZeroOut.
-    negative = ZeroOut.zero_out(positive)[0]
-
-    # --------------------------------------------------------
-    # 9. KSampler
-    # Exact workflow: euler / beta / denoise 1 / CFG 1.
-    # --------------------------------------------------------
     samples = KSampler.sample(
-        model,
+        patched_model,
         seed,
-        int(steps),
-        float(cfg),
-        "euler",
-        "beta",
+        steps,
+        cfg,
+        sampler_name,
+        scheduler,
         positive,
         negative,
         target_latent,
-        float(DENOISE)
+        denoise=1.0
     )[0]
 
     # --------------------------------------------------------
-    # 10. VAE Decode
+    # DECODE
     # --------------------------------------------------------
+
+    print("\n[7/7] Decoding output...")
+
     decoded = VAEDecode.decode(
-        BASE_VAE,
+        vae,
         samples
-    )[0]
+    )[0].detach().cpu()
 
-    arr = (
-        decoded[0]
-        .detach()
-        .cpu()
-        .clamp(0, 1)
-        .numpy()
+    image_array = np.clip(
+        decoded[0].numpy() * 255.0,
+        0,
+        255
+    ).astype(np.uint8)
+
+    output = Image.fromarray(image_array)
+
+    save_path = get_save_path(edit_prompt)
+    output.save(save_path)
+
+    # Optional Google Drive copy used by the original app.
+    drive_path = "/content/gdrive/MyDrive/krea2_turbo"
+
+    if os.path.exists(drive_path):
+        shutil.copy(save_path, drive_path)
+        print(f"\nCopied to Google Drive: {drive_path}")
+
+    print(f"\nSaved: {save_path}")
+
+    print("\nLoRAs used:")
+    if applied_loras:
+        for lora in applied_loras:
+            print(f"   • {lora}")
+    else:
+        print("   • None")
+
+    print(f"\nSeed: {seed}")
+    print(
+        f"Total time: "
+        f"{time.time() - total_start:.1f}s"
     )
 
-    image = Image.fromarray(
-        (arr * 255).astype(np.uint8),
-        "RGB"
-    )
+    print("=" * 60 + "\n")
 
-    safe = re.sub(
-        r"[^a-zA-Z0-9_-]+",
-        "_",
-        prompt
-    )[:50]
+    return save_path, seed
 
-    path = os.path.join(
-        OUT_DIR,
-        f"{safe}_{seed}_{uuid.uuid4().hex[:6]}.png"
-    )
 
-    image.save(path)
+# ============================================================
+# GRADIO
+# ============================================================
 
-    print(f"Saved: {path}")
-    print(f"Seed: {seed}")
-    print(f"Time: {time.time()-start:.1f}s")
-    print("=" * 65)
+import gradio as gr
 
-    return path, seed
 
-def run(
-    source, source_b, prompt,
-    grounding, ref_boost, ref_boost_a,
-    steps, cfg, seed,
-    *lora_values
+# ============================================================
+# UI FUNCTION
+# ============================================================
+
+def generate_ui(
+    source_image,
+    source_image_b,
+
+    positive_prompt,
+    negative_prompt,
+
+    width,
+    height,
+
+    seed,
+    steps,
+
+    cfg,
+
+    grounding_px,
+    ref_boost,
+    ref_boost_a,
+    fit_mode,
+
+    lora1,
+    lora1_strength,
+
+    lora2,
+    lora2_strength,
+
+    lora3,
+    lora3_strength,
+
+    lora4,
+    lora4_strength,
+
+    lora5,
+    lora5_strength,
+
+    lora6,
+    lora6_strength,
+
+    lora7,
+    lora7_strength,
+
+    lora8,
+    lora8_strength,
+
+    lora9,
+    lora9_strength,
+
+    lora10,
+    lora10_strength,
+
+    sampler_name="euler",
+    scheduler="simple"
 ):
-    names = list(lora_values[0::2])
-    strengths = list(lora_values[1::2])
 
-    selected = [x for x in names if x]
-    if len(selected) != len(set(selected)):
-        raise gr.Error(
-            "Each LoRA can only be selected once."
-        )
+    if not source_image:
+        raise gr.Error("Please upload an input image.")
 
-    path, used_seed = generate(
-        source,
-        source_b,
-        prompt,
-        grounding,
-        ref_boost,
-        ref_boost_a,
-        steps,
-        cfg,
-        seed,
-        names,
-        strengths
-    )
+    # Random seed when 0 is selected.
+    if int(seed) == 0:
+        seed = int(torch.randint(
+            0,
+            1125899906842624,
+            (1,)
+        ).item())
 
-    return path, path, str(used_seed)
+    lora_names = [
+        lora1, lora2, lora3, lora4, lora5,
+        lora6, lora7, lora8, lora9, lora10
+    ]
+
+    lora_strengths = [
+        lora1_strength, lora2_strength,
+        lora3_strength, lora4_strength,
+        lora5_strength, lora6_strength,
+        lora7_strength, lora8_strength,
+        lora9_strength, lora10_strength
+    ]
+
+    input_data = {
+        "input": {
+            "source_image": source_image,
+            "source_image_b": source_image_b,
+
+            "positive_prompt": positive_prompt,
+            "negative_prompt": negative_prompt,
+
+            "width": int(width),
+            "height": int(height),
+
+            "seed": int(seed),
+            "steps": int(steps),
+            "cfg": float(cfg),
+
+            "sampler_name": sampler_name,
+            "scheduler": scheduler,
+
+            "grounding_px": int(grounding_px),
+            "ref_boost": float(ref_boost),
+            "ref_boost_a": float(ref_boost_a),
+            "fit_mode": fit_mode,
+
+            "lora_names": lora_names,
+            "lora_strengths": lora_strengths
+        }
+    }
+
+    image_path, used_seed = generate(input_data)
+
+    return image_path, image_path, str(used_seed)
+
 
 # ============================================================
-# UI
+# DEFAULTS
 # ============================================================
 
-with gr.Blocks(
-    title="Krea-2 Edit",
-    theme=gr.themes.Soft()
-) as demo:
+DEFAULT_EDIT = """
+Edit the input image according to this instruction while preserving
+the subject's identity, pose, composition, lighting and realistic
+appearance unless the instruction explicitly changes them.
+"""
 
-    gr.Markdown("# Krea-2 Image Editor")
+DEFAULT_NEGATIVE = ""
+
+custom_css = """
+.gradio-container {
+    font-family:
+        'SF Pro Display',
+        -apple-system,
+        BlinkMacSystemFont,
+        sans-serif;
+}
+"""
+
+
+# ============================================================
+# GRADIO UI
+# ============================================================
+
+with gr.Blocks() as demo:
+
+    gr.HTML("""
+    <div style="
+        width:100%;
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        justify-content:center;
+        margin:20px 0;
+    ">
+        <h1 style="font-size:2.5em;margin-bottom:10px;">
+            Krea-2 Image Edit + 10 LoRA
+        </h1>
+        <div>
+            Identity-preserving image editing using Krea2Edit
+        </div>
+    </div>
+    """)
 
     with gr.Row():
 
+        # ====================================================
+        # LEFT
+        # ====================================================
+
         with gr.Column():
 
-            source = gr.Image(
-                label="Input Image",
+            # ------------------------------------------------
+            # SOURCE IMAGE
+            # ------------------------------------------------
+
+            source_image = gr.Image(
+                label="Input / Source Image",
                 type="filepath",
-                height=430
+                height=420
             )
 
-            source_b = gr.Image(
-                label="Second Reference (optional)",
+            source_image_b = gr.Image(
+                label="Second Reference Image (optional)",
                 type="filepath",
-                height=280
+                height=260
             )
 
-            prompt = gr.Textbox(
-                value="restore the image quality to 4k HDR.",
+            # ------------------------------------------------
+            # EDIT PROMPT
+            # ------------------------------------------------
+
+            positive = gr.Textbox(
+                DEFAULT_EDIT,
                 label="Edit Instruction",
-                lines=5
+                lines=6
             )
+
+            # ------------------------------------------------
+            # NEGATIVE
+            # ------------------------------------------------
+
+            negative = gr.Textbox(
+                DEFAULT_NEGATIVE,
+                label="Negative Prompt (optional)",
+                lines=4
+            )
+
+            # ------------------------------------------------
+            # IMAGE SETTINGS
+            # ------------------------------------------------
 
             with gr.Row():
 
-                grounding = gr.Slider(
-                    384, 1536,
-                    value=GROUNDING_PX,
-                    step=64,
-                    label="Grounding Resolution"
+                width = gr.Number(
+                    value=1024,
+                    label="Output Width",
+                    precision=0
                 )
 
-                ref_boost = gr.Slider(
-                    0, 10,
-                    value=REF_BOOST,
-                    step=0.1,
-                    label="Reference Fidelity"
+                height = gr.Number(
+                    value=1024,
+                    label="Output Height",
+                    precision=0
                 )
 
-                ref_boost_a = gr.Slider(
-                    0, 10,
-                    value=REF_BOOST_A,
-                    step=0.1,
-                    label="Second Reference Fidelity"
+                seed = gr.Number(
+                    value=0,
+                    label="Seed (0 = random)",
+                    precision=0
                 )
+
+            # ------------------------------------------------
+            # STEPS / CFG
+            # ------------------------------------------------
 
             with gr.Row():
 
                 steps = gr.Slider(
-                    1, 30,
-                    value=STEPS,
+                    4,
+                    25,
+                    value=8,
                     step=1,
                     label="Steps"
                 )
 
                 cfg = gr.Slider(
-                    0.5, 5,
-                    value=CFG,
+                    0.5,
+                    4.0,
+                    value=1.0,
                     step=0.1,
                     label="CFG"
                 )
 
-                seed = gr.Number(
-                    value=0,
-                    precision=0,
-                    label="Seed (0 = random)"
-                )
+            # ------------------------------------------------
+            # KREA EDIT SETTINGS
+            # ------------------------------------------------
 
             with gr.Accordion(
-                "10 LoRA Slots",
+                "🧠 Krea-2 Edit Settings",
                 open=True
             ):
 
-                lora_inputs = []
+                with gr.Row():
 
-                for i in range(10):
+                    grounding_px = gr.Slider(
+                        384,
+                        1536,
+                        value=768,
+                        step=64,
+                        label="Grounding Resolution"
+                    )
 
-                    with gr.Row():
+                    ref_boost = gr.Slider(
+                        0.25,
+                        8.0,
+                        value=1.0,
+                        step=0.25,
+                        label="Reference Fidelity"
+                    )
 
-                        d = gr.Dropdown(
-                            choices=LORAS,
-                            value=(
-                                DEFAULT_ID_LORA
-                                if i == 0 and
-                                DEFAULT_ID_LORA in LORAS
-                                else ""
-                            ),
-                            label=f"LoRA {i+1}",
-                            scale=4
-                        )
+                with gr.Row():
 
-                        s = gr.Number(
-                            value=1.0 if i == 0 else 0.0,
-                            label="Strength",
-                            precision=2,
-                            scale=1
-                        )
+                    ref_boost_a = gr.Slider(
+                        0.25,
+                        8.0,
+                        value=1.0,
+                        step=0.25,
+                        label="Reference B Fidelity"
+                    )
 
-                        lora_inputs += [d, s]
+                    fit_mode = gr.Dropdown(
+                        choices=["fit", "crop"],
+                        value="fit",
+                        label="Reference Fit Mode"
+                    )
 
-            button = gr.Button(
+                gr.Markdown(
+                    """
+                    **Turbo recommendation:** 8 steps, CFG 1.
+
+                    **Grounding:** 768 is a good default. Around 1024 can
+                    help people/identity likeness.
+
+                    **Reference fidelity:** 1.0 is neutral. Higher values
+                    pull harder toward the source appearance.
+
+                    **Fit mode:** `fit` is the recommended v1.2 mode.
+                    """
+                )
+
+            # ------------------------------------------------
+            # LORA SETTINGS
+            # ------------------------------------------------
+
+            with gr.Accordion(
+                "🎨 LoRA Settings",
+                open=True
+            ):
+
+                gr.Markdown(
+                    """
+                    Select up to **10 LoRAs**. Leave unused slots empty.
+                    The Krea-2 identity-edit LoRA should normally be enabled.
+                    """
+                )
+
+                with gr.Row():
+                    lora1 = gr.Dropdown(
+                        choices=[""] + LORA_FILES,
+                        value=(
+                            DEFAULT_EDIT_LORA
+                            if DEFAULT_EDIT_LORA in LORA_FILES
+                            else ""
+                        ),
+                        label="LoRA 1",
+                        scale=4
+                    )
+                    lora1_strength = gr.Textbox(
+                        value="1",
+                        label="Strength",
+                        scale=1
+                    )
+
+                with gr.Row():
+                    lora2 = gr.Dropdown(
+                        choices=[""] + LORA_FILES,
+                        value="",
+                        label="LoRA 2",
+                        scale=4
+                    )
+                    lora2_strength = gr.Textbox(
+                        value="1",
+                        label="Strength",
+                        scale=1
+                    )
+
+                with gr.Row():
+                    lora3 = gr.Dropdown(
+                        choices=[""] + LORA_FILES,
+                        value="",
+                        label="LoRA 3",
+                        scale=4
+                    )
+                    lora3_strength = gr.Textbox(
+                        value="1",
+                        label="Strength",
+                        scale=1
+                    )
+
+                with gr.Row():
+                    lora4 = gr.Dropdown(
+                        choices=[""] + LORA_FILES,
+                        value="",
+                        label="LoRA 4",
+                        scale=4
+                    )
+                    lora4_strength = gr.Textbox(
+                        value="1",
+                        label="Strength",
+                        scale=1
+                    )
+
+                with gr.Row():
+                    lora5 = gr.Dropdown(
+                        choices=[""] + LORA_FILES,
+                        value="",
+                        label="LoRA 5",
+                        scale=4
+                    )
+                    lora5_strength = gr.Textbox(
+                        value="1",
+                        label="Strength",
+                        scale=1
+                    )
+
+                with gr.Row():
+                    lora6 = gr.Dropdown(
+                        choices=[""] + LORA_FILES,
+                        value="",
+                        label="LoRA 6",
+                        scale=4
+                    )
+                    lora6_strength = gr.Textbox(
+                        value="1",
+                        label="Strength",
+                        scale=1
+                    )
+
+                with gr.Row():
+                    lora7 = gr.Dropdown(
+                        choices=[""] + LORA_FILES,
+                        value="",
+                        label="LoRA 7",
+                        scale=4
+                    )
+                    lora7_strength = gr.Textbox(
+                        value="1",
+                        label="Strength",
+                        scale=1
+                    )
+
+                with gr.Row():
+                    lora8 = gr.Dropdown(
+                        choices=[""] + LORA_FILES,
+                        value="",
+                        label="LoRA 8",
+                        scale=4
+                    )
+                    lora8_strength = gr.Textbox(
+                        value="1",
+                        label="Strength",
+                        scale=1
+                    )
+
+                with gr.Row():
+                    lora9 = gr.Dropdown(
+                        choices=[""] + LORA_FILES,
+                        value="",
+                        label="LoRA 9",
+                        scale=4
+                    )
+                    lora9_strength = gr.Textbox(
+                        value="1",
+                        label="Strength",
+                        scale=1
+                    )
+
+                with gr.Row():
+                    lora10 = gr.Dropdown(
+                        choices=[""] + LORA_FILES,
+                        value="",
+                        label="LoRA 10",
+                        scale=4
+                    )
+                    lora10_strength = gr.Textbox(
+                        value="1",
+                        label="Strength",
+                        scale=1
+                    )
+
+            # ------------------------------------------------
+            # GENERATE
+            # ------------------------------------------------
+
+            run = gr.Button(
                 "🚀 Edit Image",
                 variant="primary",
                 size="lg"
             )
 
+        # ====================================================
+        # RIGHT
+        # ====================================================
+
         with gr.Column():
 
-            output = gr.Image(
+            output_img = gr.Image(
                 label="Edited Image",
-                height=680
+                height=650
             )
 
-            file = gr.File(
-                label="Output File"
+            download_image = gr.File(
+                label="Download Image"
             )
 
             used_seed = gr.Textbox(
@@ -539,29 +980,117 @@ with gr.Blocks(
                 interactive=False
             )
 
-    button.click(
-        fn=run,
+
+    # ========================================================
+    # LORA DUPLICATE PREVENTION
+    # ========================================================
+
+    all_lora_dropdowns = [
+        lora1, lora2, lora3, lora4, lora5,
+        lora6, lora7, lora8, lora9, lora10
+    ]
+
+
+    def update_lora_choices(*selected):
+
+        updated = []
+
+        for current in selected:
+
+            choices = [""] + [
+                x for x in LORA_FILES
+                if x == current or x not in selected
+            ]
+
+            updated.append(
+                gr.update(choices=choices)
+            )
+
+        return updated
+
+
+    for dropdown in all_lora_dropdowns:
+
+        dropdown.change(
+            fn=update_lora_choices,
+            inputs=all_lora_dropdowns,
+            outputs=all_lora_dropdowns
+        )
+
+
+    # ========================================================
+    # RUN
+    # ========================================================
+
+    run.click(
+        fn=generate_ui,
+
         inputs=[
-            source,
-            source_b,
-            prompt,
-            grounding,
+            source_image,
+            source_image_b,
+
+            positive,
+            negative,
+
+            width,
+            height,
+
+            seed,
+            steps,
+
+            cfg,
+
+            grounding_px,
             ref_boost,
             ref_boost_a,
-            steps,
-            cfg,
-            seed,
-            *lora_inputs
+            fit_mode,
+
+            lora1,
+            lora1_strength,
+
+            lora2,
+            lora2_strength,
+
+            lora3,
+            lora3_strength,
+
+            lora4,
+            lora4_strength,
+
+            lora5,
+            lora5_strength,
+
+            lora6,
+            lora6_strength,
+
+            lora7,
+            lora7_strength,
+
+            lora8,
+            lora8_strength,
+
+            lora9,
+            lora9_strength,
+
+            lora10,
+            lora10_strength
         ],
+
         outputs=[
-            output,
-            file,
+            output_img,
+            download_image,
             used_seed
         ]
     )
 
-if __name__ == "__main__":
-    demo.launch(
-        share=True,
-        debug=True
-    )
+
+# ============================================================
+# LAUNCH
+# ============================================================
+
+demo.launch(
+    share=True,
+    debug=True,
+    theme=gr.themes.Soft(),
+    css=custom_css
+)
