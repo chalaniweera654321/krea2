@@ -103,7 +103,7 @@ KSampler = NODE_CLASS_MAPPINGS["KSampler"]()
 VAEDecode = NODE_CLASS_MAPPINGS["VAEDecode"]()
 VAEEncode = NODE_CLASS_MAPPINGS["VAEEncode"]()
 EmptyLatentImage = NODE_CLASS_MAPPINGS["EmptyLatentImage"]()
-LoraLoader = NODE_CLASS_MAPPINGS["LoraLoader"]
+LoraLoader = NODE_CLASS_MAPPINGS["LoraLoader"]()
 
 Krea2EditModelPatch = NODE_CLASS_MAPPINGS["Krea2EditModelPatch"]()
 Krea2EditGroundedEncode = NODE_CLASS_MAPPINGS["Krea2EditGroundedEncode"]()
