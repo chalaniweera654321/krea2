@@ -8,7 +8,43 @@ import torch
 import numpy as np
 from PIL import Image
 
+import sys
+import importlib
+
+# ComfyUI root
+COMFYUI_PATH = "/content/ComfyUI"
+
+if COMFYUI_PATH not in sys.path:
+    sys.path.insert(0, COMFYUI_PATH)
+
+# Load ComfyUI nodes
 from nodes import NODE_CLASS_MAPPINGS
+
+# ============================================================
+# Explicitly load Krea2Edit
+# ============================================================
+
+krea2edit_path = (
+    "/content/ComfyUI/custom_nodes/"
+    "comfyui-krea2edit"
+)
+
+if krea2edit_path not in sys.path:
+    sys.path.insert(0, krea2edit_path)
+
+krea2edit = importlib.import_module(
+    "comfyui_krea2edit"
+)
+
+# Register Krea2Edit nodes into ComfyUI mappings
+NODE_CLASS_MAPPINGS.update(
+    krea2edit.NODE_CLASS_MAPPINGS
+)
+
+print(
+    "[Krea2Edit] nodes loaded:",
+    list(krea2edit.NODE_CLASS_MAPPINGS.keys())
+)
 
 
 # ============================================================
