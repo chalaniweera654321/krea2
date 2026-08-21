@@ -12,7 +12,7 @@ import sys
 import os
 import importlib.util
 
-COMFYUI_PATH = "/content/ComfyUI"
+COMFYUI_PATH = "/root/ComfyUI"
 
 if COMFYUI_PATH not in sys.path:
     sys.path.insert(0, COMFYUI_PATH)
@@ -24,7 +24,7 @@ from nodes import NODE_CLASS_MAPPINGS
 # ============================================================
 
 KREA2EDIT_DIR = (
-    "/content/ComfyUI/custom_nodes/comfyui-krea2edit"
+    "/root/ComfyUI/custom_nodes/comfyui-krea2edit"
 )
 
 KREA2EDIT_INIT = os.path.join(
@@ -515,7 +515,7 @@ def generate(input_data):
     output.save(save_path)
 
     # Optional Google Drive copy used by the original app.
-    drive_path = "/content/gdrive/MyDrive/krea2_turbo"
+    drive_path = "/root/gdrive/MyDrive/krea2_turbo"
 
     if os.path.exists(drive_path):
         shutil.copy(save_path, drive_path)
