@@ -45,7 +45,7 @@ VAELoader = NODE_CLASS_MAPPINGS["VAELoader"]()
 KSampler = NODE_CLASS_MAPPINGS["KSampler"]()
 VAEDecode = NODE_CLASS_MAPPINGS["VAEDecode"]()
 VAEEncode = NODE_CLASS_MAPPINGS["VAEEncode"]()
-EmptySD3LatentImage = NODE_CLASS_MAPPINGS["EmptySD3LatentImage"]()
+EmptyLatentImage = NODE_CLASS_MAPPINGS["EmptyLatentImage"]()
 LoraLoader = NODE_CLASS_MAPPINGS["LoraLoader"]
 
 Krea2EditModelPatch = NODE_CLASS_MAPPINGS["Krea2EditModelPatch"]()
@@ -334,7 +334,7 @@ def generate(input_data):
 
     print("\n[3/7] Creating target latent...")
 
-    target_latent = EmptySD3LatentImage.generate(
+    target_latent = EmptyLatentImage.generate(
         width,
         height,
         batch_size=1
