@@ -9,42 +9,63 @@ import numpy as np
 from PIL import Image
 
 import sys
-import importlib
+import os
+import importlib.util
 
-# ComfyUI root
 COMFYUI_PATH = "/content/ComfyUI"
 
 if COMFYUI_PATH not in sys.path:
     sys.path.insert(0, COMFYUI_PATH)
 
-# Load ComfyUI nodes
 from nodes import NODE_CLASS_MAPPINGS
 
 # ============================================================
-# Explicitly load Krea2Edit
+# Load Krea2Edit directly from its __init__.py
 # ============================================================
 
-krea2edit_path = (
-    "/content/ComfyUI/custom_nodes/"
-    "comfyui-krea2edit"
+KREA2EDIT_DIR = (
+    "/content/ComfyUI/custom_nodes/comfyui-krea2edit"
 )
 
-if krea2edit_path not in sys.path:
-    sys.path.insert(0, krea2edit_path)
-
-krea2edit = importlib.import_module(
-    "comfyui_krea2edit"
+KREA2EDIT_INIT = os.path.join(
+    KREA2EDIT_DIR,
+    "__init__.py"
 )
 
-# Register Krea2Edit nodes into ComfyUI mappings
+spec = importlib.util.spec_from_file_location(
+    "krea2edit",
+    KREA2EDIT_INIT,
+    submodule_search_locations=[KREA2EDIT_DIR]
+)
+
+krea2edit = importlib.util.module_from_spec(spec)
+
+# Make the custom node directory importable
+if KREA2EDIT_DIR not in sys.path:
+    sys.path.insert(0, KREA2EDIT_DIR)
+
+spec.loader.exec_module(krea2edit)
+
+# Register Krea2Edit nodes
 NODE_CLASS_MAPPINGS.update(
     krea2edit.NODE_CLASS_MAPPINGS
 )
 
 print(
-    "[Krea2Edit] nodes loaded:",
+    "[Krea2Edit] Loaded:",
     list(krea2edit.NODE_CLASS_MAPPINGS.keys())
 )
+
+# Verify
+if "Krea2EditModelPatch" not in NODE_CLASS_MAPPINGS:
+    raise RuntimeError(
+        "Krea2EditModelPatch failed to register."
+    )
+
+if "Krea2EditGroundedEncode" not in NODE_CLASS_MAPPINGS:
+    raise RuntimeError(
+        "Krea2EditGroundedEncode failed to register."
+    )
 
 
 # ============================================================
